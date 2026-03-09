@@ -243,7 +243,7 @@ function AlphaSurfaceInner() {
       }}>
         <div style={{
           width: 6, height: 6, borderRadius: "50%",
-          backgroundColor: ws ? "#9ca3af" : "#d1d5db"
+          backgroundColor: ws ? "#10b981" : "#d1d5db"
         }} />
         {ws ? "Online" : "Reconnecting"}
       </div>
