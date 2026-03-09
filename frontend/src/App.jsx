@@ -70,6 +70,31 @@ function handleCanvasMessage(editor, message) {
       })
       break
 
+    // ── Bind Arrow (shape-to-shape connection) ────────────────
+    case "bind_arrow":
+      if (p.fromShapeId && p.toShapeId) {
+        const fromShape = editor.getShape(p.fromShapeId)
+        const toShape = editor.getShape(p.toShapeId)
+        if (fromShape && toShape) {
+          // Calculate midpoint between shapes for arrow base position
+          const midX = (fromShape.x + toShape.x) / 2
+          const midY = (fromShape.y + toShape.y) / 2
+          editor.createShape({
+            type: "arrow",
+            x: midX,
+            y: midY,
+            props: {
+              start: { type: "binding", boundShapeId: p.fromShapeId },
+              end: { type: "binding", boundShapeId: p.toShapeId },
+              richText: toRichText(p.label ?? ""),
+              color: p.color ?? "black",
+              size: p.size ?? "m",
+            }
+          })
+        }
+      }
+      break
+
     // ── Image from URL ────────────────────────────────────────
     case "add_image": {
       const assetId = AssetRecordType.createId()
@@ -119,9 +144,32 @@ function handleCanvasMessage(editor, message) {
       break
     }
 
+    // ── Delete specific shapes ────────────────────────────────
+    case "delete_shapes":
+      if (p.shapeIds && p.shapeIds.length > 0) {
+        editor.deleteShapes(p.shapeIds)
+      }
+      break
+
     // ── Zoom / pan camera ─────────────────────────────────────
     case "set_camera":
       editor.setCamera({ x: p.x ?? 0, y: p.y ?? 0, z: p.zoom ?? 1 })
+      break
+
+    // ── Zoom to fit all content ───────────────────────────────
+    case "zoom_to_fit":
+      editor.zoomToFit()
+      break
+
+    // ── Focus on specific shape ───────────────────────────────
+    case "focus_shape":
+      if (p.shapeId) {
+        const shape = editor.getShape(p.shapeId)
+        if (shape) {
+          editor.zoomToSelection([p.shapeId])
+          editor.select(p.shapeId)
+        }
+      }
       break
 
     // ── Canvas snapshots (monitoring, ignore on frontend) ─────
@@ -191,7 +239,10 @@ function AlphaSurfaceInner() {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: "canvas_snapshot",
-          payload: { shape_count: shapeIds.length }
+          payload: { 
+            shapeIds: shapeIds.map(id => id.toString()),
+            shape_count: shapeIds.length 
+          }
         }))
       }
     }, 3000)
