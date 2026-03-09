@@ -33,6 +33,19 @@ function AlphaSurfaceInner() {
           }
         })
       }
+
+      if (message.type === "add_note") {
+        editor.createShape({
+          type: "note",
+          x: message.payload.x ?? 300,
+          y: message.payload.y ?? 300,
+          props: {
+            richText: toRichText(message.payload.text),
+            color: message.payload.color ?? "violet",
+            size: "m"
+          }
+        })
+      }
     }
 
     socket.onerror = (e) => console.error("WebSocket error:", e)

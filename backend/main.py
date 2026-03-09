@@ -11,10 +11,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Track all connected clients
+connected_clients: list[WebSocket] = []
+
+async def broadcast(message: dict):
+    for client in connected_clients:
+        await client.send_text(json.dumps(message))
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("Frontend connected!")
+    connected_clients.append(websocket)
+    print(f"Client connected. Total: {len(connected_clients)}")
 
     await websocket.send_text(json.dumps({
         "type": "add_text",
@@ -25,8 +33,11 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
-            print(f"Received: {message['type']}")
+            print(f"Received: {message['type']} — broadcasting to {len(connected_clients)} clients")
+            await broadcast(message)
 
     except WebSocketDisconnect:
-        print("Frontend disconnected")
+        connected_clients.remove(websocket)
+        print(f"Client disconnected. Total: {len(connected_clients)}")
+        # ========== TEST CONNECTION CODE - END ==========
 
