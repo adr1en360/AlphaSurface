@@ -1,244 +1,356 @@
 """
-AlphaSurface — Gemini Live agent for real-time voice + vision canvas control
-Uses google.genai SDK with gemini-2.0-flash-live-001 model.
+AlphaSurface — ADK-based agent for real-time voice + vision canvas control.
+
+Architecture:
+  - google-adk LlmAgent owns the Gemini model + tool declarations (auto-generated
+    from tools.py type hints — no manual schema writing).
+  - ADK Runner manages the session lifecycle.
+  - LiveRequestQueue bridges the async WebSocket streams (audio, images) into
+    the ADK run_live() event loop.
+  - Canvas actions flow: Gemini tool call → tools.py enqueues action →
+    main.py drains queue → WebSocket broadcast to browser.
 """
 
 import asyncio
+import base64
 import os
-from google import genai
+import time
+from typing import Callable, Awaitable
+
+from google.adk.agents import LlmAgent
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+from google.adk.agents.live_request_queue import LiveRequestQueue
+from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.genai import types
-import tools
 
-SYSTEM_PROMPT = """You are AlphaSurface, a voice-controlled AI that helps users think by manipulating an infinite canvas.
+import tools as canvas_tools
 
-**Core Rules:**
-- NEVER respond with text — only call tools
-- NEVER modify or delete shapes the user drew manually
-- You only work with shapes YOU created via tools
+# ── Session constants ─────────────────────────────────────────────────────────
+APP_NAME = "alphasurface"
+USER_ID = "user"
+SESSION_ID = "canvas_session"
 
-**Two Modes:**
+# ── Mode-aware system prompts ─────────────────────────────────────────────────
+_BASE_PROMPT = """
+You are AlphaSurface, an AI co-thinker on a shared infinite-canvas whiteboard.
 
-**Think Mode** (violet sticky notes):
-- User is thinking out loud, exploring ideas
-- Add violet sticky notes with provocative questions, counter-arguments, or alternative perspectives
-- Challenge assumptions, surface tensions, connect disparate threads
-- Use bind_arrow to show relationships between ideas
-- Be concise — max 15 words per note
+CORE PHILOSOPHY (from Advait Sarkar's research):
+- Challenge and support human thinking — never replace it.
+- You work ON the canvas, not in a chat box. Actions speak louder than words.
+- Be spatially aware: spread shapes out, use empty space, avoid overlapping.
 
-**Explain Mode** (silent visual support):
-- User is explaining something to someone else (presentation, teaching)
-- Add visual structure silently: diagrams, arrows, shapes
-- Use add_geo for concepts, bind_arrow for flow
-- Use add_text for labels only when essential
-- Never interrupt — purely visual support
+TOOL USAGE — MANDATORY:
+- ALWAYS call a canvas tool when the user mentions a concept, asks to visualize 
+  something, or when you want to provoke reflection.
+- Call list_canvas_shapes BEFORE bind_arrow, delete_shapes, focus_shape, or 
+  move_shape — you need real shape IDs.
+- After adding 3+ shapes, call zoom_to_fit so the user sees everything.
+- Never describe what you're about to draw — just draw it.
 
-Always call zoom_to_fit after adding multiple shapes so the user can see your work.
+AUDIO RESPONSES:
+- Keep verbal responses under 8 words.
+- Examples: "Got it", "Adding that now", "Connecting those ideas", "Done".
+- Never read out shape content aloud — the user can see the canvas.
+- Speak only to acknowledge, clarify, or confirm.
+
+CANVAS POSITIONING:
+- Use varied positions: x 100–1400, y 80–900.
+- Leave at least 120px between shapes.
+- You can see the canvas image — place new shapes in empty regions.
 """
 
+_THINK_MODE_PROMPT = """
+MODE: Think Mode (solo thinker / student)
+- Start with a blank canvas. Infer intent from what the user draws and says.
+- Inject "Sarkar provocations" as violet sticky notes:
+    • Counterarguments to stated positions
+    • Missing connections between concepts
+    • Flagged logical inconsistencies
+    • Blind spots or unstated assumptions
+- Provocations should be questions or fragments, NOT answers.
+  Bad:  "Capitalism causes inequality."
+  Good: "What mechanisms drive that inequality specifically?"
+- Space provocations away from the shapes they challenge.
+"""
+
+_EXPLAIN_MODE_PROMPT = """
+MODE: Explain Mode (teacher / presenter)
+- The user is presenting to an audience. Never interrupt their flow.
+- Surface relevant document sections as blue rectangles.
+- Generate supporting diagrams and visual summaries proactively.
+- Anticipate what comes next based on drawing + speech context.
+- Keep the canvas clean and well-organized for the audience.
+"""
+
+
+def build_system_prompt(mode: str) -> str:
+    suffix = _THINK_MODE_PROMPT if mode == "think" else _EXPLAIN_MODE_PROMPT
+    return _BASE_PROMPT.strip() + "\n\n" + suffix.strip()
+
+
+# ── Agent factory ─────────────────────────────────────────────────────────────
+
+def create_agent(mode: str = "think") -> LlmAgent:
+    """Build and return the ADK LlmAgent for AlphaSurface."""
+    return LlmAgent(
+        name="AlphaSurface",
+        model="gemini-2.5-flash-native-audio-preview-12-2025",  # current stable Live API model
+        description="Real-time voice+vision whiteboard co-thinker",
+        instruction=build_system_prompt(mode),
+        tools=canvas_tools.ALL_TOOLS,         # ADK auto-generates schemas from type hints
+    )
+
+
+# ── Main session class ────────────────────────────────────────────────────────
+
+BroadcastFn = Callable[[dict], Awaitable[None]]
+
 class AlphaSurfaceAgent:
-    """Gemini Live session manager for canvas control."""
+    """
+    Manages one ADK Live session.
     
-    def __init__(self, broadcast_fn, mode: str = "think"):
+    Lifecycle:
+      start()          — open ADK session, begin event loop
+      push_audio()     — feed PCM audio chunks from browser mic
+      push_canvas_image() — feed JPEG/PNG canvas snapshots for vision
+      stop()           — graceful shutdown
+    """
+    
+    def __init__(self, broadcast_fn: BroadcastFn, mode: str = "think"):
         self.broadcast_fn = broadcast_fn
-        self.mode = mode  # "think" or "explain"
-        self.audio_queue = asyncio.Queue()
-        self.image_queue = asyncio.Queue()
-        self.client = None
-        self.session = None
+        self.mode = mode
+
+        self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self._image_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=2)  # keep only latest
+
+        self._live_queue: LiveRequestQueue | None = None
+        self._runner: Runner | None = None
+        self._session = None
         self.running = False
-        
+        self._last_image_sent: float = 0.0  # rate-limit vision frames
+
+        # Signals that the agent's greeting turn has finished so mic audio flows
+        self._ready = asyncio.Event()
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
     async def start(self):
-        """Open Gemini Live session and start send/receive loops."""
+        """Entry point — called once from FastAPI startup."""
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
             print("ERROR: GEMINI_API_KEY not set")
             return
-            
-        try:
-            self.client = genai.Client(api_key=api_key)
-            
-            # Define tools for Gemini
-            tool_declarations = [
-                types.Tool(function_declarations=[
-                    types.FunctionDeclaration(
-                        name="add_text_to_canvas",
-                        description="Add a text label to the canvas",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={
-                                "text": types.Schema(type=types.Type.STRING, description="Text content"),
-                                "x": types.Schema(type=types.Type.NUMBER, description="X coordinate"),
-                                "y": types.Schema(type=types.Type.NUMBER, description="Y coordinate"),
-                                "size": types.Schema(type=types.Type.STRING, description="Size: s, m, l, xl"),
-                                "color": types.Schema(type=types.Type.STRING, description="Color name"),
-                            },
-                            required=["text"]
-                        )
-                    ),
-                    types.FunctionDeclaration(
-                        name="add_note_to_canvas",
-                        description="Add a sticky note to the canvas",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={
-                                "text": types.Schema(type=types.Type.STRING, description="Note content"),
-                                "x": types.Schema(type=types.Type.NUMBER, description="X coordinate"),
-                                "y": types.Schema(type=types.Type.NUMBER, description="Y coordinate"),
-                                "size": types.Schema(type=types.Type.STRING, description="Size: s, m, l, xl"),
-                                "color": types.Schema(type=types.Type.STRING, description="Note color"),
-                            },
-                            required=["text"]
-                        )
-                    ),
-                    types.FunctionDeclaration(
-                        name="add_geo_to_canvas",
-                        description="Add a geometric shape to the canvas",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={
-                                "geo": types.Schema(type=types.Type.STRING, description="Shape type: rectangle, ellipse, triangle, diamond, hexagon, star"),
-                                "text": types.Schema(type=types.Type.STRING, description="Text inside shape"),
-                                "x": types.Schema(type=types.Type.NUMBER, description="X coordinate"),
-                                "y": types.Schema(type=types.Type.NUMBER, description="Y coordinate"),
-                                "w": types.Schema(type=types.Type.NUMBER, description="Width"),
-                                "h": types.Schema(type=types.Type.NUMBER, description="Height"),
-                                "color": types.Schema(type=types.Type.STRING, description="Color"),
-                                "fill": types.Schema(type=types.Type.STRING, description="Fill: none, semi, solid"),
-                                "size": types.Schema(type=types.Type.STRING, description="Size: s, m, l, xl"),
-                            },
-                            required=[]
-                        )
-                    ),
-                    types.FunctionDeclaration(
-                        name="bind_arrow",
-                        description="Create an arrow connecting two shapes",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={
-                                "fromShapeId": types.Schema(type=types.Type.STRING, description="Source shape ID"),
-                                "toShapeId": types.Schema(type=types.Type.STRING, description="Target shape ID"),
-                                "label": types.Schema(type=types.Type.STRING, description="Arrow label"),
-                                "color": types.Schema(type=types.Type.STRING, description="Arrow color"),
-                            },
-                            required=["fromShapeId", "toShapeId"]
-                        )
-                    ),
-                    types.FunctionDeclaration(
-                        name="delete_shapes",
-                        description="Delete specific shapes from the canvas",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={
-                                "shapeIds": types.Schema(
-                                    type=types.Type.ARRAY,
-                                    items=types.Schema(type=types.Type.STRING),
-                                    description="Array of shape IDs to delete"
-                                ),
-                            },
-                            required=["shapeIds"]
-                        )
-                    ),
-                    types.FunctionDeclaration(
-                        name="zoom_to_fit",
-                        description="Zoom camera to fit all content on canvas",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={},
-                            required=[]
-                        )
-                    ),
-                    types.FunctionDeclaration(
-                        name="focus_shape",
-                        description="Focus camera on a specific shape",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={
-                                "shapeId": types.Schema(type=types.Type.STRING, description="Shape ID to focus on"),
-                            },
-                            required=["shapeId"]
-                        )
-                    ),
-                ])
-            ]
-            
-            config = {
-                "system_instruction": SYSTEM_PROMPT,
-                "tools": tool_declarations,
-            }
-            
-            async with self.client.aio.live.connect(
-                model="gemini-2.0-flash-live-001",
-                config=config
-            ) as session:
-                self.session = session
-                self.running = True
-                
-                print(f"Gemini Live session open — mode: {self.mode}")
-                
-                # Run send and receive loops concurrently
-                await asyncio.gather(
-                    self._send_loop(),
-                    self._receive_loop(),
+
+        # Retry loop — reconnect if the session drops
+        while True:
+            try:
+                await self._run_session()
+            except Exception as exc:
+                print(f"[Agent] Session error: {exc} — retrying in 5s")
+                import traceback; traceback.print_exc()
+                self.running = False
+                self._ready.clear()
+                await asyncio.sleep(5)
+
+    def push_audio(self, pcm_bytes: bytes):
+        """Feed raw PCM audio (16 kHz, 16-bit, mono) from the browser mic."""
+        if self.running and self._ready.is_set():
+            try:
+                self._audio_queue.put_nowait(pcm_bytes)
+            except asyncio.QueueFull:
+                pass  # drop oldest — live audio, latency > completeness
+
+    def push_canvas_image(self, image_bytes: bytes):
+        """Feed a canvas screenshot (JPEG or PNG) for Gemini vision."""
+        if self.running:
+            # Drain old frames — only the latest matters
+            while not self._image_queue.empty():
+                try: self._image_queue.get_nowait()
+                except asyncio.QueueEmpty: break
+            try:
+                self._image_queue.put_nowait(image_bytes)
+            except asyncio.QueueFull:
+                pass
+
+    async def stop(self):
+        self.running = False
+        if self._live_queue:
+            self._live_queue.close()
+
+    # ── Internal session loop ─────────────────────────────────────────────────
+
+    async def _run_session(self):
+        agent = create_agent(self.mode)
+        session_service = InMemorySessionService()
+        
+        self._runner = Runner(
+            agent=agent,
+            app_name=APP_NAME,
+            session_service=session_service,
+        )
+
+        self._session = await session_service.create_session(
+            app_name=APP_NAME,
+            user_id=USER_ID,
+            session_id=SESSION_ID,
+        )
+
+        self._live_queue = LiveRequestQueue()
+
+        run_config = RunConfig(
+            streaming_mode=StreamingMode.BIDI,
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name="Aoede"
+                    )
                 )
-            
-        except Exception as e:
-            print(f"Agent error: {e}")
-            self.running = False
-            
+            ),
+            response_modalities=[types.Modality.AUDIO],
+        )
+
+        self.running = True
+        print(f"[Agent] ADK session open — mode: {self.mode}")
+
+        await asyncio.gather(
+            self._send_loop(),
+            self._receive_loop(run_config),
+            self._action_drain_loop(),
+        )
+
     async def _send_loop(self):
-        """Drain audio and image queues, send to Gemini every 50ms."""
+        """
+        Drains audio and image queues and feeds them into the LiveRequestQueue.
+        Waits for _ready before forwarding mic audio (lets greeting finish first).
+        """
+        # Send initial greeting prompt
+        self._live_queue.send_content(
+            content=types.Content(
+                role="user",
+                parts=[types.Part(text=(
+                    "You are now connected to AlphaSurface. "
+                    "Briefly greet the user with audio (under 6 words), "
+                    "then call add_note_to_canvas with a short welcome message."
+                ))]
+            )
+        )
+        
+        print("[Agent] Waiting for greeting to complete before forwarding mic audio...")
+        await self._ready.wait()
+        print("[Agent] Ready — mic audio now flowing")
+
+        # Minimum seconds between canvas image sends to avoid overwhelming Gemini
+        IMAGE_INTERVAL = 10.0
+
         while self.running:
             try:
-                # Send audio if available
-                if not self.audio_queue.empty():
-                    pcm_bytes = await self.audio_queue.get()
-                    await self.session.send({
-                        "mime_type": "audio/pcm;rate=16000",
-                        "data": pcm_bytes
-                    })
-                
-                # Send image if available
-                if not self.image_queue.empty():
-                    jpeg_bytes = await self.image_queue.get()
-                    await self.session.send({
-                        "mime_type": "image/jpeg",
-                        "data": jpeg_bytes
-                    })
-                
-                await asyncio.sleep(0.05)  # 50ms
-                
+                # Batch all pending audio chunks into one blob
+                chunks = []
+                while not self._audio_queue.empty():
+                    try: chunks.append(self._audio_queue.get_nowait())
+                    except asyncio.QueueEmpty: break
+                if chunks:
+                    combined = b"".join(chunks)
+                    self._live_queue.send_realtime(
+                        types.Blob(
+                            data=combined,
+                            mime_type="audio/pcm;rate=16000"
+                        )
+                    )
+
+                # Send latest canvas image — rate-limited
+                now = time.monotonic()
+                if not self._image_queue.empty() and (now - self._last_image_sent) >= IMAGE_INTERVAL:
+                    try:
+                        frame = self._image_queue.get_nowait()
+                        self._live_queue.send_realtime(
+                            types.Blob(
+                                data=frame,
+                                mime_type="image/png"
+                            )
+                        )
+                        self._last_image_sent = now
+                    except asyncio.QueueEmpty:
+                        pass
+                elif not self._image_queue.empty():
+                    # Drain stale frames we won't send yet
+                    while not self._image_queue.empty():
+                        try: self._image_queue.get_nowait()
+                        except asyncio.QueueEmpty: break
+
+                await asyncio.sleep(0.05)   # 50 ms polling cadence
+
             except Exception as e:
-                print(f"Send loop error: {e}")
+                print(f"[Agent] Send loop error: {e}")
                 break
-                
-    async def _receive_loop(self):
-        """Listen for Gemini responses, dispatch tool calls."""
+
+    async def _receive_loop(self, run_config: RunConfig):
+        """Consume ADK events: audio → broadcast, turn_complete → unblock mic."""
         try:
-            async for response in self.session.receive():
-                # Check for tool calls
-                if hasattr(response, 'server_content') and response.server_content:
-                    if hasattr(response.server_content, 'model_turn') and response.server_content.model_turn:
-                        for part in response.server_content.model_turn.parts:
-                            if hasattr(part, 'function_call') and part.function_call:
-                                func_call = part.function_call
-                                print(f"Tool call: {func_call.name} {func_call.args}")
-                                await tools.dispatch_tool(
-                                    func_call.name,
-                                    dict(func_call.args),
-                                    self.broadcast_fn
-                                )
-                                
+            async for event in self._runner.run_live(
+                session=self._session,
+                live_request_queue=self._live_queue,
+                run_config=run_config,
+            ):
+                # ── Audio response ─────────────────────────────────────────
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if hasattr(part, "inline_data") and part.inline_data:
+                            audio_data = part.inline_data.data
+                            if audio_data:
+                                await self.broadcast_fn({
+                                    "type": "ai_status",
+                                    "payload": {"status": "speaking"},
+                                })
+                                await self.broadcast_fn({
+                                    "type": "audio_response",
+                                    "payload": {
+                                        "data": base64.b64encode(audio_data).decode(),
+                                        "format": "pcm16",
+                                        "sample_rate": 24000,
+                                    },
+                                })
+
+                # ── Tool call in progress ──────────────────────────────────
+                if event.get_function_calls():
+                    await self.broadcast_fn({
+                        "type": "ai_status",
+                        "payload": {"status": "thinking"},
+                    })
+
+                # ── Turn complete ──────────────────────────────────────────
+                if event.turn_complete:
+                    if not self._ready.is_set():
+                        self._ready.set()
+                        print("[Agent] Greeting turn done — mic live")
+                    await self.broadcast_fn({
+                        "type": "ai_status",
+                        "payload": {"status": "idle"},
+                    })
+
         except Exception as e:
-            print(f"Receive loop error: {e}")
+            print(f"[Agent] Receive loop error: {e}")
+            import traceback; traceback.print_exc()
         finally:
             self.running = False
-            
-    def push_audio(self, pcm_bytes: bytes):
-        """Add audio chunk to send queue."""
-        if self.running:
-            self.audio_queue.put_nowait(pcm_bytes)
-            
-    def push_canvas_image(self, jpeg_bytes: bytes):
-        """Add canvas screenshot to send queue."""
-        if self.running:
-            self.image_queue.put_nowait(jpeg_bytes)
+            await self.broadcast_fn({
+                "type": "ai_status",
+                "payload": {"status": "disconnected"},
+            })
+
+    async def _action_drain_loop(self):
+        """
+        Drains canvas_tools.canvas_action_queue and broadcasts each action.
+        This is how tool calls reach the browser — tools enqueue, we broadcast.
+        """
+        while self.running:
+            try:
+                action = canvas_tools.canvas_action_queue.get_nowait()
+                print(f"[Agent] Canvas action: {action['type']}")
+                await self.broadcast_fn(action)
+            except asyncio.QueueEmpty:
+                await asyncio.sleep(0.02)
+            except Exception as e:
+                print(f"[Agent] Action drain error: {e}")
+                await asyncio.sleep(0.1)

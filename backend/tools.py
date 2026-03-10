@@ -1,104 +1,175 @@
 """
-AlphaSurface — Canvas tool definitions for Gemini Live agent
-Each tool receives (name, args, broadcast_fn) and broadcasts the correct JSON payload.
+AlphaSurface — Canvas tools for ADK LlmAgent.
+
+ADK rules for Google AI auto-schema generation:
+  - NO default parameter values
+  - NO union types (str | None) — use Optional fields via docstring only
+  - All parameters must be simple types: str, float, int, bool, list[str]
+  - Literal types ARE supported
 """
 
-async def add_text_to_canvas(name: str, args: dict, broadcast_fn):
-    """Add a text label to the canvas."""
-    await broadcast_fn({
-        "type": "add_text",
-        "payload": {
-            "text": args.get("text", ""),
-            "x": args.get("x"),
-            "y": args.get("y"),
-            "size": args.get("size", "m"),
-            "color": args.get("color", "black"),
-        }
-    })
+import asyncio
+from typing import Literal
 
-async def add_note_to_canvas(name: str, args: dict, broadcast_fn):
-    """Add a sticky note to the canvas."""
-    await broadcast_fn({
-        "type": "add_note",
-        "payload": {
-            "text": args.get("text", ""),
-            "x": args.get("x"),
-            "y": args.get("y"),
-            "size": args.get("size", "m"),
-            "color": args.get("color", "violet"),
-        }
-    })
+# ── Shared action queue ────────────────────────────────────────────────────────
+canvas_action_queue: asyncio.Queue = asyncio.Queue()
 
-async def add_geo_to_canvas(name: str, args: dict, broadcast_fn):
-    """Add a geometric shape (rectangle, ellipse, triangle, etc.) to the canvas."""
-    await broadcast_fn({
-        "type": "add_geo",
-        "payload": {
-            "geo": args.get("geo", "rectangle"),
-            "text": args.get("text", ""),
-            "x": args.get("x"),
-            "y": args.get("y"),
-            "w": args.get("w", 200),
-            "h": args.get("h", 120),
-            "color": args.get("color", "blue"),
-            "fill": args.get("fill", "semi"),
-            "dash": args.get("dash", "draw"),
-            "size": args.get("size", "m"),
-        }
-    })
-
-async def bind_arrow(name: str, args: dict, broadcast_fn):
-    """Create an arrow connecting two shapes."""
-    await broadcast_fn({
-        "type": "bind_arrow",
-        "payload": {
-            "fromShapeId": args.get("fromShapeId"),
-            "toShapeId": args.get("toShapeId"),
-            "label": args.get("label", ""),
-            "color": args.get("color", "black"),
-            "size": args.get("size", "m"),
-        }
-    })
-
-async def delete_shapes(name: str, args: dict, broadcast_fn):
-    """Delete specific shapes from the canvas."""
-    await broadcast_fn({
-        "type": "delete_shapes",
-        "payload": {
-            "shapeIds": args.get("shapeIds", []),
-        }
-    })
-
-async def zoom_to_fit(name: str, args: dict, broadcast_fn):
-    """Zoom the camera to fit all content on the canvas."""
-    await broadcast_fn({
-        "type": "zoom_to_fit",
-        "payload": {}
-    })
-
-async def focus_shape(name: str, args: dict, broadcast_fn):
-    """Focus the camera on a specific shape."""
-    await broadcast_fn({
-        "type": "focus_shape",
-        "payload": {
-            "shapeId": args.get("shapeId"),
-        }
-    })
-
-# Tool registry for agent.py to dispatch function calls
-TOOLS = {
-    "add_text_to_canvas": add_text_to_canvas,
-    "add_note_to_canvas": add_note_to_canvas,
-    "add_geo_to_canvas": add_geo_to_canvas,
-    "bind_arrow": bind_arrow,
-    "delete_shapes": delete_shapes,
-    "zoom_to_fit": zoom_to_fit,
-    "focus_shape": focus_shape,
+# ── Canvas state mirror (written by main.py) ──────────────────────────────────
+canvas_state: dict = {
+    "shape_ids": [],
+    "shape_count": 0,
 }
 
-async def dispatch_tool(name: str, args: dict, broadcast_fn):
-    """Dispatch a tool call from Gemini to the appropriate handler."""
-    if name in TOOLS:
-        await TOOLS[name](name, args, broadcast_fn)
-    else:
-        print(f"Unknown tool: {name}")
+def update_canvas_state(shape_ids: list[str], shape_count: int) -> None:
+    """Called by main.py whenever the browser sends a canvas_snapshot."""
+    canvas_state["shape_ids"] = shape_ids
+    canvas_state["shape_count"] = shape_count
+
+
+async def _emit(action_type: str, payload: dict) -> dict:
+    await canvas_action_queue.put({"type": action_type, "payload": payload})
+    return {"status": "ok", "action": action_type}
+
+
+# ── Tools ─────────────────────────────────────────────────────────────────────
+
+async def add_text_to_canvas(
+    text: str,
+    x: float,
+    y: float,
+    size: Literal["s", "m", "l", "xl"],
+    color: str,
+) -> dict:
+    """Add a plain text label to the canvas. Use for titles or short annotations."""
+    return await _emit("add_text", {
+        "text": text, "x": x, "y": y, "size": size, "color": color,
+    })
+
+
+async def add_note_to_canvas(
+    text: str,
+    x: float,
+    y: float,
+    size: Literal["s", "m", "l", "xl"],
+    color: str,
+) -> dict:
+    """
+    Add a sticky note to the canvas.
+    Use for ideas, Sarkar provocations, questions, or reflections.
+    Think Mode: use color=violet. Explain Mode: use color=blue or yellow.
+    """
+    return await _emit("add_note", {
+        "text": text, "x": x, "y": y, "size": size, "color": color,
+    })
+
+
+async def add_geo_to_canvas(
+    geo: Literal["rectangle", "ellipse", "triangle", "diamond", "hexagon", "star"],
+    text: str,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    color: str,
+    fill: Literal["none", "semi", "solid"],
+    size: Literal["s", "m", "l", "xl"],
+) -> dict:
+    """Add a geometric shape to the canvas. Use for concept boxes, diagrams, flowcharts."""
+    return await _emit("add_geo", {
+        "geo": geo, "text": text, "x": x, "y": y,
+        "w": w, "h": h, "color": color, "fill": fill, "size": size,
+    })
+
+
+async def bind_arrow(
+    from_shape_id: str,
+    to_shape_id: str,
+    label: str,
+    color: str,
+) -> dict:
+    """
+    Draw a directional arrow between two existing shapes.
+    Call list_canvas_shapes first to get real shape IDs.
+    Use to show relationships, causality, or sequence.
+    """
+    known = canvas_state["shape_ids"]
+    if from_shape_id not in known or to_shape_id not in known:
+        return {
+            "status": "error",
+            "reason": f"Unknown shape IDs. Known IDs on canvas: {known}",
+        }
+    return await _emit("bind_arrow", {
+        "fromShapeId": from_shape_id,
+        "toShapeId": to_shape_id,
+        "label": label,
+        "color": color,
+    })
+
+
+async def list_canvas_shapes() -> dict:
+    """
+    Return the current list of shape IDs on the canvas.
+    Always call this before bind_arrow, delete_shapes, focus_shape, or move_shape.
+    """
+    return {
+        "shape_ids": canvas_state["shape_ids"],
+        "shape_count": canvas_state["shape_count"],
+    }
+
+
+async def delete_shapes(shape_ids: list[str]) -> dict:
+    """Delete one or more shapes by their IDs. Call list_canvas_shapes first."""
+    return await _emit("delete_shapes", {"shapeIds": shape_ids})
+
+
+async def move_shape(shape_id: str, x: float, y: float) -> dict:
+    """Move an existing shape to a new canvas position."""
+    return await _emit("move_shape", {"shapeId": shape_id, "x": x, "y": y})
+
+
+async def update_shape_text(shape_id: str, text: str) -> dict:
+    """Update the text content of an existing shape."""
+    return await _emit("update_shape", {"shapeId": shape_id, "text": text})
+
+
+async def update_shape_color(shape_id: str, color: str) -> dict:
+    """Update the color of an existing shape."""
+    return await _emit("update_shape", {"shapeId": shape_id, "color": color})
+
+
+async def select_shapes(shape_ids: list[str]) -> dict:
+    """Highlight specific shapes to draw the user's attention to them."""
+    return await _emit("select_shapes", {"shapeIds": shape_ids})
+
+
+async def zoom_to_fit() -> dict:
+    """Zoom the canvas camera to show all content. Call after adding many shapes."""
+    return await _emit("zoom_to_fit", {})
+
+
+async def focus_shape(shape_id: str) -> dict:
+    """Pan and zoom the camera to center on a specific shape."""
+    return await _emit("focus_shape", {"shapeId": shape_id})
+
+
+async def clear_canvas() -> dict:
+    """Remove all shapes from the canvas. Only use when user explicitly asks."""
+    return await _emit("clear_canvas", {})
+
+
+# ── Tool registry ─────────────────────────────────────────────────────────────
+ALL_TOOLS = [
+    add_text_to_canvas,
+    add_note_to_canvas,
+    add_geo_to_canvas,
+    bind_arrow,
+    list_canvas_shapes,
+    delete_shapes,
+    move_shape,
+    update_shape_text,
+    update_shape_color,
+    select_shapes,
+    zoom_to_fit,
+    focus_shape,
+    clear_canvas,
+]

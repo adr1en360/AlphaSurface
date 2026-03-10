@@ -172,6 +172,73 @@ function handleCanvasMessage(editor, message) {
       }
       break
 
+    // ── Move shape to new position ────────────────────────────
+    case "move_shape":
+      if (p.shapeId) {
+        const shape = editor.getShape(p.shapeId)
+        if (shape) editor.updateShape({ id: p.shapeId, type: shape.type, x: p.x, y: p.y })
+      }
+      break
+
+    // ── Update shape properties ───────────────────────────────
+    case "update_shape":
+      if (p.shapeId) {
+        const shape = editor.getShape(p.shapeId)
+        if (shape) {
+          const updatedProps = { ...shape.props }
+          if (p.text !== undefined) updatedProps.richText = toRichText(p.text)
+          if (p.color !== undefined) updatedProps.color = p.color
+          editor.updateShape({ id: p.shapeId, type: shape.type, props: updatedProps })
+        }
+      }
+      break
+
+    // ── Select shapes ─────────────────────────────────────────
+    case "select_shapes":
+      if (p.shapeIds && p.shapeIds.length > 0) editor.select(...p.shapeIds)
+      break
+
+    // ── Add freehand drawing ──────────────────────────────────
+    case "add_draw":
+      if (p.points && p.points.length > 0) {
+        editor.createShape({
+          type: "draw",
+          x: p.x ?? 0, y: p.y ?? 0,
+          props: {
+            segments: [{ type: "free", points: p.points }],
+            color: p.color ?? "black",
+            size: p.size ?? "m",
+            isComplete: true,
+          }
+        })
+      }
+      break
+
+    // ── Audio response from Gemini ────────────────────────────
+    case "audio_response": {
+      if (!p.data) break
+      const raw = atob(p.data)
+      const buf = new ArrayBuffer(raw.length)
+      const view = new Uint8Array(buf)
+      for (let i = 0; i < raw.length; i++) view[i] = raw.charCodeAt(i)
+      const audioCtx = new AudioContext({ sampleRate: 24000 })
+      const audioBuffer = audioCtx.createBuffer(1, buf.byteLength / 2, 24000)
+      const channel = audioBuffer.getChannelData(0)
+      const pcm = new Int16Array(buf)
+      for (let i = 0; i < pcm.length; i++) channel[i] = pcm[i] / 32768
+      const source = audioCtx.createBufferSource()
+      source.buffer = audioBuffer
+      source.connect(audioCtx.destination)
+      source.start()
+      break
+    }
+
+    // ── AI status updates (thinking, listening, etc.) ─────────
+    case "ai_status":
+      // Backend sends status updates - just log for debugging
+      // Could be used to show "AI thinking..." indicators in UI
+      break
+
     // ── Canvas snapshots (monitoring, ignore on frontend) ─────
     case "canvas_snapshot":
       // Sent by frontend every 3s, echoed back by backend - safe to ignore
@@ -186,6 +253,7 @@ function AlphaSurfaceInner() {
   const editor = useEditor()
   const [ws, setWs] = useState(null)
   const [indicator, setIndicator] = useState(false)
+  const [audioEnabled, setAudioEnabled] = useState(false)
 
   useEffect(() => {
     if (!editor) return  // Wait for editor to be ready
@@ -193,8 +261,10 @@ function AlphaSurfaceInner() {
     let socket
     let retryDelay = 1000
     let retryTimeout
+    let disposed = false  // Prevents zombie reconnects from StrictMode double-mount
 
     function connect() {
+      if (disposed) return  // Don't connect if effect was cleaned up
       socket = new WebSocket("/ws")
 
       socket.onopen = () => {
@@ -204,6 +274,7 @@ function AlphaSurfaceInner() {
       }
 
       socket.onmessage = (event) => {
+        if (disposed) return
         const message = JSON.parse(event.data)
         console.log("Incoming:", message.type, message.payload)
         setIndicator(true)
@@ -214,6 +285,7 @@ function AlphaSurfaceInner() {
       socket.onerror = () => {}  // onclose handles it
 
       socket.onclose = () => {
+        if (disposed) return  // Don't retry if cleanup already ran
         console.log(`Disconnected. Retrying in ${retryDelay / 1000}s...`)
         setWs(null)
         retryTimeout = setTimeout(() => {
@@ -226,6 +298,7 @@ function AlphaSurfaceInner() {
     connect()
 
     return () => {
+      disposed = true
       clearTimeout(retryTimeout)
       socket?.close()
     }
@@ -246,6 +319,82 @@ function AlphaSurfaceInner() {
         }))
       }
     }, 3000)
+    return () => clearInterval(interval)
+  }, [ws, editor])
+
+  useEffect(() => {
+    if (!ws) return
+    let audioContext, processor, source, stream
+
+    async function startMic() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+        audioContext = new AudioContext({ sampleRate: 16000 })
+        source = audioContext.createMediaStreamSource(stream)
+        processor = audioContext.createScriptProcessor(4096, 1, 1)
+        processor.onaudioprocess = (e) => {
+          if (ws.readyState !== WebSocket.OPEN) return
+          const input = e.inputBuffer.getChannelData(0)
+          // Simple energy-based VAD: skip silent frames so Gemini's turn detection works
+          let energy = 0
+          for (let i = 0; i < input.length; i++) energy += input[i] * input[i]
+          const rms = Math.sqrt(energy / input.length)
+          if (rms < 0.01) return  // below noise floor — don't send
+          const pcm16 = new Int16Array(input.length)
+          for (let i = 0; i < input.length; i++) {
+            pcm16[i] = Math.max(-32768, Math.min(32767, input[i] * 32768))
+          }
+          const base64 = btoa(String.fromCharCode(...new Uint8Array(pcm16.buffer)))
+          ws.send(JSON.stringify({ type: "audio_chunk", payload: { data: base64 } }))
+        }
+        source.connect(processor)
+        processor.connect(audioContext.destination)
+        console.log("Microphone active — streaming to backend")
+      } catch (err) {
+        console.warn("Mic unavailable:", err.message)
+      }
+    }
+
+    startMic()
+
+    return () => {
+      processor?.disconnect()
+      source?.disconnect()
+      stream?.getTracks().forEach(t => t.stop())
+      audioContext?.close()
+    }
+  }, [ws])
+
+  useEffect(() => {
+    if (!ws) return
+    ws.send(JSON.stringify({ type: "set_audio", payload: { enabled: audioEnabled } }))
+  }, [audioEnabled, ws])
+
+  useEffect(() => {
+    if (!ws || !editor) return
+    const interval = setInterval(async () => {
+      if (ws.readyState !== WebSocket.OPEN) return
+      const shapeIds = [...editor.getCurrentPageShapeIds()]
+      if (shapeIds.length === 0) return
+      // Wait for shapes to finish rendering before screenshotting
+      await new Promise(r => setTimeout(r, 500))
+      try {
+        const { blob } = await editor.toImage(shapeIds, { 
+          format: "png",
+          background: true,
+          padding: 32
+        })
+        const reader = new FileReader()
+        reader.onloadend = () => {
+          if (ws.readyState !== WebSocket.OPEN) return
+          const base64 = reader.result.split(",")[1]
+          ws.send(JSON.stringify({ type: "canvas_image", payload: { data: base64 } }))
+        }
+        reader.readAsDataURL(blob)
+      } catch (err) {
+        // Silently skip — shape may still be rendering
+      }
+    }, 15000)
     return () => clearInterval(interval)
   }, [ws, editor])
 
@@ -298,6 +447,19 @@ function AlphaSurfaceInner() {
         }} />
         {ws ? "Online" : "Reconnecting"}
       </div>
+      {/* Audio toggle button */}
+      <button
+        onClick={() => setAudioEnabled(v => !v)}
+        style={{
+          position: "fixed", top: 16, right: 20, zIndex: 9999,
+          background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.1)",
+          borderRadius: 6, padding: "4px 8px", cursor: "pointer",
+          fontSize: 16, lineHeight: 1
+        }}
+        title={audioEnabled ? "Mute AI voice" : "Enable AI voice"}
+      >
+        {audioEnabled ? "🔊" : "🔇"}
+      </button>
       {/* Save/Load buttons - minimal style */}
       <div style={{
         position: "fixed", top: "50%", transform: "translateY(-50%)", left: 20,
