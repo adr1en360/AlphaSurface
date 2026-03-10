@@ -29,6 +29,30 @@ load_dotenv()
 connected_clients: list[WebSocket] = []
 _first_client_connected = asyncio.Event()
 
+# All message types that the backend can forward directly to all browsers.
+# Add new shape types here when you add them to tools.py + App.jsx.
+CANVAS_PASSTHROUGH_TYPES = {
+    "add_text",
+    "add_note",
+    "add_geo",
+    "add_arrow",
+    "bind_arrow",
+    "add_image",
+    "add_embed",        # Live iframe (YouTube, Figma, Maps, etc.)
+    "add_bookmark",     # Rich link card
+    "add_frame",
+    "add_draw",
+    "delete_shapes",
+    "update_shape",
+    "move_shape",
+    "clear_canvas",
+    "set_camera",
+    "zoom_to_fit",
+    "focus_shape",
+    "select_shapes",
+}
+
+
 async def broadcast(message: dict):
     """Fan-out a message to every connected browser tab."""
     dead: list[WebSocket] = []
@@ -41,19 +65,21 @@ async def broadcast(message: dict):
     for ws in dead:
         connected_clients.remove(ws)
 
+
 # ── Agent singleton ────────────────────────────────────────────────────────────
 agent = AlphaSurfaceAgent(
     broadcast_fn=broadcast,
     mode=os.environ.get("ALPHASURFACE_MODE", "think"),
 )
 
+
 # ── App lifecycle ──────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start the ADK agent in the background
     asyncio.create_task(agent.start())
     yield
     await agent.stop()
+
 
 app = FastAPI(lifespan=lifespan)
 
@@ -67,6 +93,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # ── Health check ──────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
@@ -77,6 +104,7 @@ async def health():
         "clients": len(connected_clients),
     }
 
+
 # ── WebSocket endpoint ────────────────────────────────────────────────────────
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -85,7 +113,7 @@ async def websocket_endpoint(websocket: WebSocket):
     _first_client_connected.set()
     print(f"[WS] Client connected ({len(connected_clients)} total)")
 
-    # Catch new clients up with current canvas state
+    # Catch new clients up on canvas shape IDs
     if canvas_tools.canvas_state["shape_count"] > 0:
         await websocket.send_text(json.dumps({
             "type": "canvas_snapshot",
@@ -106,18 +134,15 @@ async def websocket_endpoint(websocket: WebSocket):
             if msg_type == "canvas_snapshot":
                 shape_ids = payload.get("shapeIds", [])
                 shape_count = payload.get("shape_count", 0)
-
                 # Update tools.py mirror so bind_arrow etc. use real IDs
                 canvas_tools.update_canvas_state(shape_ids, shape_count)
-
-                # Don't rebroadcast snapshots — they're only for backend state tracking
+                # Don't rebroadcast — backend state tracking only
 
             # ── Canvas screenshot for Gemini vision ───────────────────────
             elif msg_type == "canvas_image":
                 jpeg_b64 = payload.get("data", "")
                 if jpeg_b64:
-                    image_bytes = base64.b64decode(jpeg_b64)
-                    agent.push_canvas_image(image_bytes)
+                    agent.push_canvas_image(base64.b64decode(jpeg_b64))
 
             # ── Microphone audio stream ────────────────────────────────────
             elif msg_type == "audio_chunk":
@@ -125,20 +150,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 if pcm_b64:
                     agent.push_audio(base64.b64decode(pcm_b64))
 
-            # ── Audio on/off toggle from UI ────────────────────────────────
+            # ── Audio on/off toggle (frontend local mute only) ─────────────
             elif msg_type == "set_audio":
-                # No-op — audio is always driven by Gemini Live.
-                # Frontend uses this to mute local playback only.
-                pass
+                pass  # Audio is always driven by Gemini Live — frontend mutes locally
 
-            # ── Canvas action messages (from test scripts or other tools) ──
-            elif msg_type in {
-                "add_text", "add_note", "add_geo", "add_arrow",
-                "bind_arrow", "add_image", "add_frame", "add_draw",
-                "delete_shapes", "update_shape", "move_shape",
-                "clear_canvas", "set_camera", "zoom_to_fit",
-                "focus_shape", "select_shapes",
-            }:
+            # ── Canvas action passthrough ──────────────────────────────────
+            # Messages in this set are forwarded directly to all browser clients.
+            # Typically used by test scripts or direct API callers.
+            elif msg_type in CANVAS_PASSTHROUGH_TYPES:
                 await broadcast(message)
 
             else:

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Tldraw, useEditor, toRichText, getSnapshot, loadSnapshot, AssetRecordType, createShapeId } from "tldraw"
 import "tldraw/tldraw.css"
 
@@ -10,13 +10,23 @@ const _playback = {
     if (!this._ctx) this._ctx = new AudioContext({ sampleRate: 24000 })
     return this._ctx
   },
-  nextTime: 0,   // cursor: when the last scheduled chunk ends
-  enabled: true, // controlled by 🔊/🔇 button
+  nextTime: 0,      // cursor: when the last scheduled chunk ends
+  enabled: true,    // controlled by 🔊/🔇 button
+  sources: [],      // track active source nodes so we can stop them on interrupt
+}
+
+// Stop all currently-playing AI audio immediately (called on ai_interrupted)
+function flushAudioPlayback() {
+  for (const src of _playback.sources) {
+    try { src.stop() } catch (_) {}
+  }
+  _playback.sources = []
+  _playback.nextTime = 0
 }
 
 // Handler for incoming WebSocket messages - extracted outside component to avoid stale closures
 function handleCanvasMessage(editor, message) {
-  if (!editor) return  // Guard against null editor
+  if (!editor) return
   const p = message.payload
 
   switch (message.type) {
@@ -53,13 +63,13 @@ function handleCanvasMessage(editor, message) {
         type: "geo",
         x: p.x ?? 200, y: p.y ?? 200,
         props: {
-          geo: p.geo ?? "rectangle",   // rectangle | ellipse | triangle | diamond | hexagon | star | oval | rhombus | pentagon | cloud | arrow-right | arrow-left | check-box | x-box | cross
+          geo: p.geo ?? "rectangle",
           w: p.w ?? 200,
           h: p.h ?? 120,
           richText: toRichText(p.text ?? ""),
           color: p.color ?? "blue",
-          fill: p.fill ?? "semi",      // none | semi | solid | pattern
-          dash: p.dash ?? "draw",      // draw | dashed | dotted | solid
+          fill: p.fill ?? "semi",
+          dash: p.dash ?? "draw",
           size: p.size ?? "m",
         }
       })
@@ -76,22 +86,19 @@ function handleCanvasMessage(editor, message) {
           richText: toRichText(p.label ?? ""),
           color: p.color ?? "black",
           size: p.size ?? "m",
-          arrowheadEnd: p.arrowhead ?? "arrow",  // arrow | triangle | square | dot | none
+          arrowheadEnd: p.arrowhead ?? "arrow",
           arrowheadStart: "none",
         }
       })
       break
 
     // ── Bind Arrow (shape-to-shape connection) ────────────────
-    // tldraw v4: arrow props.start/end are always {x,y} numbers.
-    // Shape bindings are separate records created via editor.createBinding().
     case "bind_arrow": {
       if (p.fromShapeId && p.toShapeId) {
         const fromShape = editor.getShape(p.fromShapeId)
         const toShape = editor.getShape(p.toShapeId)
         if (fromShape && toShape) {
           const arrowId = createShapeId()
-          // Place arrow at centroid of the two shapes
           const cx = (fromShape.x + toShape.x) / 2
           const cy = (fromShape.y + toShape.y) / 2
           editor.createShape({
@@ -108,7 +115,6 @@ function handleCanvasMessage(editor, message) {
               arrowheadStart: "none",
             }
           })
-          // Bind start terminal to fromShape
           editor.createBinding({
             type: "arrow",
             fromId: arrowId,
@@ -120,7 +126,6 @@ function handleCanvasMessage(editor, message) {
               isPrecise: false,
             }
           })
-          // Bind end terminal to toShape
           editor.createBinding({
             type: "arrow",
             fromId: arrowId,
@@ -165,6 +170,35 @@ function handleCanvasMessage(editor, message) {
       })
       break
     }
+
+    // ── Embed (YouTube, Figma, CodeSandbox, Google Maps, etc.) ─
+    // tldraw supports iframes for a curated list of services.
+    // Full list: https://tldraw.dev/reference/tldraw/TLEmbedShape
+    case "add_embed":
+      editor.createShape({
+        type: "embed",
+        x: p.x ?? 200, y: p.y ?? 200,
+        props: {
+          url: p.url,
+          w: p.w ?? 560,
+          h: p.h ?? 315,
+        }
+      })
+      break
+
+    // ── Bookmark (rich link card — title, desc, thumbnail) ────
+    case "add_bookmark":
+      editor.createShape({
+        type: "bookmark",
+        x: p.x ?? 200, y: p.y ?? 200,
+        props: {
+          url: p.url,
+          w: 300,
+          h: 160,
+          assetId: null,
+        }
+      })
+      break
 
     // ── Frame (named section / container) ────────────────────
     case "add_frame":
@@ -261,10 +295,9 @@ function handleCanvasMessage(editor, message) {
       if (!p.data || !_playback.enabled) break
       const raw = atob(p.data)
       const buf = new ArrayBuffer(raw.length)
-      const view = new Uint8Array(buf)
-      for (let i = 0; i < raw.length; i++) view[i] = raw.charCodeAt(i)
+      const bytes = new Uint8Array(buf)
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i)
 
-      // Resume context if browser suspended it (requires prior user gesture)
       if (_playback.ctx.state === "suspended") _playback.ctx.resume()
 
       const audioBuffer = _playback.ctx.createBuffer(1, buf.byteLength / 2, 24000)
@@ -276,24 +309,29 @@ function handleCanvasMessage(editor, message) {
       source.buffer = audioBuffer
       source.connect(_playback.ctx.destination)
 
-      // Schedule chunk immediately after the previous one ends.
-      // If we've fallen behind (gap between Gemini turns), snap to now.
       const now = _playback.ctx.currentTime
       if (_playback.nextTime < now) _playback.nextTime = now
       source.start(_playback.nextTime)
       _playback.nextTime += audioBuffer.duration
+
+      // Track source so we can stop it on barge-in interrupt
+      _playback.sources.push(source)
+      source.onended = () => {
+        _playback.sources = _playback.sources.filter(s => s !== source)
+      }
       break
     }
 
-    // ── AI status updates (thinking, listening, etc.) ─────────
-    case "ai_status":
-      // Backend sends status updates - just log for debugging
-      // Could be used to show "AI thinking..." indicators in UI
+    // ── Gemini barge-in: stop playing mid-sentence ────────────
+    // Fires when user speaks over the AI — flush queued audio immediately.
+    case "ai_interrupted":
+      flushAudioPlayback()
       break
 
-    // ── Canvas snapshots (monitoring, ignore on frontend) ─────
+    // ── AI status updates ─────────────────────────────────────
+    // Handled in AlphaSurfaceInner via setAiStatus — not here.
+    case "ai_status":
     case "canvas_snapshot":
-      // Sent by frontend every 3s, echoed back by backend - safe to ignore
       break
 
     default:
@@ -301,45 +339,76 @@ function handleCanvasMessage(editor, message) {
   }
 }
 
+// ── Status pill config ────────────────────────────────────────────────────────
+const STATUS_CONFIG = {
+  idle:         { label: "Listening",   dot: "#10b981", pulse: false },
+  thinking:     { label: "Thinking…",   dot: "#f59e0b", pulse: true  },
+  speaking:     { label: "Speaking",    dot: "#06b6d4", pulse: true  },
+  disconnected: { label: "Offline",     dot: "#6b7280", pulse: false },
+}
+
 function AlphaSurfaceInner() {
   const editor = useEditor()
   const [ws, setWs] = useState(null)
-  const [indicator, setIndicator] = useState(false)
+  const [indicator, setIndicator] = useState(false)  // top stripe on canvas action
   const [audioEnabled, setAudioEnabled] = useState(false)
+  const [aiStatus, setAiStatus] = useState("disconnected")
+  const wsRef = useRef(null)  // always-current ref for audio processor callback
 
+  // ── WebSocket connection with exponential backoff ─────────────────────────
   useEffect(() => {
-    if (!editor) return  // Wait for editor to be ready
-    
+    if (!editor) return
+
     let socket
     let retryDelay = 1000
     let retryTimeout
-    let disposed = false  // Prevents zombie reconnects from StrictMode double-mount
+    let disposed = false
 
     function connect() {
-      if (disposed) return  // Don't connect if effect was cleaned up
+      if (disposed) return
       socket = new WebSocket("/ws")
+      wsRef.current = socket
 
       socket.onopen = () => {
         console.log("Connected to AlphaSurface backend")
-        retryDelay = 1000  // reset backoff on success
+        retryDelay = 1000
         setWs(socket)
+        setAiStatus("idle")
       }
 
       socket.onmessage = (event) => {
         if (disposed) return
         const message = JSON.parse(event.data)
-        console.log("Incoming:", message.type, message.payload)
-        setIndicator(true)
-        setTimeout(() => setIndicator(false), 1500)
+
+        // Route ai_status updates to React state; everything else to canvas
+        if (message.type === "ai_status") {
+          setAiStatus(message.payload?.status ?? "idle")
+          return
+        }
+        if (message.type === "ai_interrupted") {
+          flushAudioPlayback()
+          setAiStatus("idle")
+          return
+        }
+
+        // Flash the top action stripe for any canvas mutation
+        const isCanvasAction = message.type !== "canvas_snapshot"
+        if (isCanvasAction) {
+          setIndicator(true)
+          setTimeout(() => setIndicator(false), 1500)
+        }
+
         handleCanvasMessage(editor, message)
       }
 
-      socket.onerror = () => {}  // onclose handles it
+      socket.onerror = () => {}
 
       socket.onclose = () => {
-        if (disposed) return  // Don't retry if cleanup already ran
-        console.log(`Disconnected. Retrying in ${retryDelay / 1000}s...`)
+        if (disposed) return
+        console.log(`Disconnected. Retrying in ${retryDelay / 1000}s…`)
         setWs(null)
+        wsRef.current = null
+        setAiStatus("disconnected")
         retryTimeout = setTimeout(() => {
           retryDelay = Math.min(retryDelay * 2, 30000)
           connect()
@@ -356,6 +425,7 @@ function AlphaSurfaceInner() {
     }
   }, [editor])
 
+  // ── Canvas shape inventory — backend needs real shape IDs ─────────────────
   useEffect(() => {
     if (!ws || !editor) return
     const interval = setInterval(() => {
@@ -364,9 +434,9 @@ function AlphaSurfaceInner() {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: "canvas_snapshot",
-          payload: { 
+          payload: {
             shapeIds: shapeIds.map(id => id.toString()),
-            shape_count: shapeIds.length 
+            shape_count: shapeIds.length
           }
         }))
       }
@@ -374,37 +444,50 @@ function AlphaSurfaceInner() {
     return () => clearInterval(interval)
   }, [ws, editor])
 
+  // ── Microphone → WebSocket audio stream ───────────────────────────────────
+  // echoCancellation MUST be true — without it the mic hears the AI's own voice
+  // and Gemini never detects a real barge-in from the user.
   useEffect(() => {
     if (!ws) return
     let audioContext, processor, source, stream
 
     async function startMic() {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,   // KEY: prevents AI voice feeding back as user speech
+            noiseSuppression: true,
+            autoGainControl: true,
+            sampleRate: 16000,
+            channelCount: 1,
+          },
+          video: false,
+        })
         audioContext = new AudioContext({ sampleRate: 16000 })
         source = audioContext.createMediaStreamSource(stream)
         processor = audioContext.createScriptProcessor(4096, 1, 1)
+
         processor.onaudioprocess = (e) => {
-          if (ws.readyState !== WebSocket.OPEN) return
+          const currentWs = wsRef.current
+          if (!currentWs || currentWs.readyState !== WebSocket.OPEN) return
           const input = e.inputBuffer.getChannelData(0)
-          // Send ALL frames (including silence) — Gemini's built-in auto-VAD needs
-          // a continuous stream to reliably detect speech onset and offset.
-          // Dropping silent frames confuses turn detection.
+          // Send continuous stream — Gemini's auto-VAD needs silence frames too
+          // to reliably detect speech onset/offset and trigger barge-in.
           const pcm16 = new Int16Array(input.length)
           for (let i = 0; i < input.length; i++) {
             pcm16[i] = Math.max(-32768, Math.min(32767, input[i] * 32768))
           }
           const base64 = btoa(String.fromCharCode(...new Uint8Array(pcm16.buffer)))
-          ws.send(JSON.stringify({ type: "audio_chunk", payload: { data: base64 } }))
+          currentWs.send(JSON.stringify({ type: "audio_chunk", payload: { data: base64 } }))
         }
+
         source.connect(processor)
-        // Silent sink: keeps the audio graph ticking (onaudioprocess fires) but
-        // gain=0 means mic is NOT routed to speakers — prevents echo feedback.
+        // Silent sink: keeps audio graph ticking but mic NOT routed to speakers
         const silentSink = audioContext.createGain()
         silentSink.gain.value = 0
         processor.connect(silentSink)
         silentSink.connect(audioContext.destination)
-        console.log("Microphone active — streaming to backend")
+        console.log("Mic active with echo cancellation — streaming to backend")
       } catch (err) {
         console.warn("Mic unavailable:", err.message)
       }
@@ -420,22 +503,22 @@ function AlphaSurfaceInner() {
     }
   }, [ws])
 
+  // ── Audio playback toggle ─────────────────────────────────────────────────
   useEffect(() => {
     _playback.enabled = audioEnabled
-    // Resume AudioContext on first user interaction (browser autoplay policy)
     if (audioEnabled && _playback.ctx.state === "suspended") _playback.ctx.resume()
   }, [audioEnabled])
 
+  // ── Canvas screenshot → Gemini vision (rate-limited) ─────────────────────
   useEffect(() => {
     if (!ws || !editor) return
     const interval = setInterval(async () => {
       if (ws.readyState !== WebSocket.OPEN) return
       const shapeIds = [...editor.getCurrentPageShapeIds()]
       if (shapeIds.length === 0) return
-      // Wait for shapes to finish rendering before screenshotting
       await new Promise(r => setTimeout(r, 500))
       try {
-        const { blob } = await editor.toImage(shapeIds, { 
+        const { blob } = await editor.toImage(shapeIds, {
           format: "png",
           background: true,
           padding: 32
@@ -447,13 +530,14 @@ function AlphaSurfaceInner() {
           ws.send(JSON.stringify({ type: "canvas_image", payload: { data: base64 } }))
         }
         reader.readAsDataURL(blob)
-      } catch (err) {
-        // Silently skip — shape may still be rendering
+      } catch (_) {
+        // Shape may still be rendering — skip silently
       }
     }, 15000)
     return () => clearInterval(interval)
   }, [ws, editor])
 
+  // ── Save / Load session ───────────────────────────────────────────────────
   const handleSave = () => {
     const snapshot = getSnapshot(editor.store)
     const blob = new Blob([JSON.stringify(snapshot)], { type: "application/json" })
@@ -473,67 +557,85 @@ function AlphaSurfaceInner() {
       const file = e.target.files[0]
       if (!file) return
       const reader = new FileReader()
-      reader.onload = (ev) => {
-        loadSnapshot(editor.store, JSON.parse(ev.target.result))
-      }
+      reader.onload = (ev) => loadSnapshot(editor.store, JSON.parse(ev.target.result))
       reader.readAsText(file)
     }
     input.click()
   }
 
+  // ── Render ────────────────────────────────────────────────────────────────
+  const status = STATUS_CONFIG[aiStatus] ?? STATUS_CONFIG.disconnected
+
   return (
     <>
+      {/* Top action stripe — flashes on every canvas mutation */}
       {indicator && (
         <div style={{
           position: "fixed", top: 0, left: 0, right: 0,
-          height: "4px", backgroundColor: "#06b6d4", zIndex: 9999
+          height: "3px", background: "linear-gradient(90deg, #06b6d4, #8b5cf6)",
+          zIndex: 9999, animation: "pulse 0.5s ease-out"
         }} />
       )}
-      {/* Backend connection status indicator */}
+
+      {/* AI status pill — top center */}
       <div style={{
-        position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)", zIndex: 9999,
-        display: "flex", alignItems: "center", gap: 6,
-        padding: "4px 8px", borderRadius: 6,
-        backgroundColor: "rgba(0, 0, 0, 0.5)", color: "#d1d5db",
-        fontSize: 11, fontWeight: 400
+        position: "fixed", top: 14, left: "50%", transform: "translateX(-50%)",
+        zIndex: 9999, display: "flex", alignItems: "center", gap: 7,
+        padding: "5px 11px", borderRadius: 999,
+        background: "rgba(10, 10, 10, 0.6)",
+        backdropFilter: "blur(8px)",
+        border: "1px solid rgba(255,255,255,0.08)",
+        color: "#d1d5db", fontSize: 11, fontWeight: 500,
+        userSelect: "none",
       }}>
         <div style={{
-          width: 6, height: 6, borderRadius: "50%",
-          backgroundColor: ws ? "#10b981" : "#d1d5db"
+          width: 7, height: 7, borderRadius: "50%",
+          background: status.dot,
+          boxShadow: status.pulse ? `0 0 6px ${status.dot}` : "none",
+          animation: status.pulse ? "statusPulse 1.2s ease-in-out infinite" : "none",
         }} />
-        {ws ? "Online" : "Reconnecting"}
+        {status.label}
       </div>
-      {/* Audio toggle button */}
+
+      {/* Audio toggle — top right */}
       <button
         onClick={() => setAudioEnabled(v => !v)}
         style={{
-          position: "fixed", top: 16, right: 20, zIndex: 9999,
-          background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.1)",
-          borderRadius: 6, padding: "4px 8px", cursor: "pointer",
-          fontSize: 16, lineHeight: 1
+          position: "fixed", top: 14, right: 20, zIndex: 9999,
+          background: "rgba(10,10,10,0.6)", backdropFilter: "blur(8px)",
+          border: "1px solid rgba(255,255,255,0.08)",
+          borderRadius: 8, padding: "5px 9px", cursor: "pointer",
+          fontSize: 15, lineHeight: 1,
         }}
         title={audioEnabled ? "Mute AI voice" : "Enable AI voice"}
       >
         {audioEnabled ? "🔊" : "🔇"}
       </button>
-      {/* Save/Load buttons - minimal style */}
+
+      {/* Save / Load — left side */}
       <div style={{
-        position: "fixed", top: "50%", transform: "translateY(-50%)", left: 20,
-        zIndex: 9999, display: "flex", flexDirection: "column", gap: 6
+        position: "fixed", top: "50%", transform: "translateY(-50%)", left: 18,
+        zIndex: 9999, display: "flex", flexDirection: "column", gap: 6,
       }}>
-        <button onClick={handleSave} style={{
-          padding: "6px 10px", borderRadius: 6,
-          background: "rgba(0, 0, 0, 0.65)", color: "#d1d5db",
-          border: "1px solid rgba(255, 255, 255, 0.1)", cursor: "pointer", fontWeight: 400,
-          fontSize: 11, whiteSpace: "nowrap"
-        }}>Save</button>
-        <button onClick={handleLoad} style={{
-          padding: "6px 10px", borderRadius: 6,
-          background: "rgba(0, 0, 0, 0.65)", color: "#d1d5db",
-          border: "1px solid rgba(255, 255, 255, 0.1)", cursor: "pointer", fontWeight: 400,
-          fontSize: 11, whiteSpace: "nowrap"
-        }}>Load</button>
+        {[["Save", handleSave], ["Load", handleLoad]].map(([label, fn]) => (
+          <button key={label} onClick={fn} style={{
+            padding: "6px 10px", borderRadius: 7,
+            background: "rgba(10,10,10,0.6)", backdropFilter: "blur(8px)",
+            color: "#d1d5db", border: "1px solid rgba(255,255,255,0.08)",
+            cursor: "pointer", fontSize: 11, fontWeight: 500,
+          }}>
+            {label}
+          </button>
+        ))}
       </div>
+
+      {/* Keyframe animations injected as a style tag */}
+      <style>{`
+        @keyframes statusPulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
+      `}</style>
     </>
   )
 }

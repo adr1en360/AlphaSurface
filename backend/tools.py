@@ -38,7 +38,7 @@ async def add_text_to_canvas(
     x: float,
     y: float,
     size: Literal["s", "m", "l", "xl"],
-    color: str,
+    color: Literal["black", "grey", "light-violet", "violet", "blue", "light-blue", "yellow", "orange", "green", "light-green", "light-red", "red", "white"],
 ) -> dict:
     """Add a plain text label to the canvas. Use for titles or short annotations."""
     return await _emit("add_text", {
@@ -51,7 +51,7 @@ async def add_note_to_canvas(
     x: float,
     y: float,
     size: Literal["s", "m", "l", "xl"],
-    color: str,
+    color: Literal["black", "grey", "light-violet", "violet", "blue", "light-blue", "yellow", "orange", "green", "light-green", "light-red", "red", "white"],
 ) -> dict:
     """
     Add a sticky note to the canvas.
@@ -70,7 +70,7 @@ async def add_geo_to_canvas(
     y: float,
     w: float,
     h: float,
-    color: str,
+    color: Literal["black", "grey", "light-violet", "violet", "blue", "light-blue", "yellow", "orange", "green", "light-green", "light-red", "red", "white"],
     fill: Literal["none", "semi", "solid"],
     size: Literal["s", "m", "l", "xl"],
 ) -> dict:
@@ -85,7 +85,7 @@ async def bind_arrow(
     from_shape_id: str,
     to_shape_id: str,
     label: str,
-    color: str,
+    color: Literal["black", "grey", "light-violet", "violet", "blue", "light-blue", "yellow", "orange", "green", "light-green", "light-red", "red", "white"],
 ) -> dict:
     """
     Draw a directional arrow between two existing shapes.
@@ -132,7 +132,7 @@ async def update_shape_text(shape_id: str, text: str) -> dict:
     return await _emit("update_shape", {"shapeId": shape_id, "text": text})
 
 
-async def update_shape_color(shape_id: str, color: str) -> dict:
+async def update_shape_color(shape_id: str, color: Literal["black", "grey", "light-violet", "violet", "blue", "light-blue", "yellow", "orange", "green", "light-green", "light-red", "red", "white"]) -> dict:
     """Update the color of an existing shape."""
     return await _emit("update_shape", {"shapeId": shape_id, "color": color})
 
@@ -157,6 +157,33 @@ async def clear_canvas() -> dict:
     return await _emit("clear_canvas", {})
 
 
+async def add_embed_to_canvas(
+    url: str,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+) -> dict:
+    """
+    Embed a live interactive iframe on the canvas.
+    Supported URLs: YouTube videos, Figma files, Google Maps, CodeSandbox.
+    Default size: w=560, h=315. Use larger sizes for Figma (w=800, h=600).
+    """
+    return await _emit("add_embed", {"url": url, "x": x, "y": y, "w": w, "h": h})
+
+
+async def add_bookmark_to_canvas(
+    url: str,
+    x: float,
+    y: float,
+) -> dict:
+    """
+    Add a rich bookmark card (title, description, thumbnail) for any URL.
+    Use for referencing web resources, articles, or documentation on the canvas.
+    """
+    return await _emit("add_bookmark", {"url": url, "x": x, "y": y})
+
+
 # ── Tool registry ─────────────────────────────────────────────────────────────
 ALL_TOOLS = [
     add_text_to_canvas,
@@ -172,4 +199,6 @@ ALL_TOOLS = [
     zoom_to_fit,
     focus_shape,
     clear_canvas,
+    add_embed_to_canvas,
+    add_bookmark_to_canvas,
 ]

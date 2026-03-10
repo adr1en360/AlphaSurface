@@ -9,6 +9,13 @@ Architecture:
     the ADK run_live() event loop.
   - Canvas actions flow: Gemini tool call → tools.py enqueues action →
     main.py drains queue → WebSocket broadcast to browser.
+
+Interruption (barge-in):
+  Gemini Live API has auto-VAD on by default. When it detects user speech during
+  AI output, it sends a turn_complete event with interrupted=True. We broadcast
+  an "ai_interrupted" message so the frontend can flush its audio playback queue.
+  The key prerequisite on the frontend is echoCancellation:true in getUserMedia —
+  without it the mic hears the AI's own voice and VAD never fires.
 """
 
 import asyncio
@@ -41,12 +48,23 @@ CORE PHILOSOPHY (from Advait Sarkar's research):
 - Be spatially aware: spread shapes out, use empty space, avoid overlapping.
 
 TOOL USAGE — MANDATORY:
-- ALWAYS call a canvas tool when the user mentions a concept, asks to visualize 
+- ALWAYS call a canvas tool when the user mentions a concept, asks to visualize
   something, or when you want to provoke reflection.
-- Call list_canvas_shapes BEFORE bind_arrow, delete_shapes, focus_shape, or 
+- Call list_canvas_shapes BEFORE bind_arrow, delete_shapes, focus_shape, or
   move_shape — you need real shape IDs.
 - After adding 3+ shapes, call zoom_to_fit so the user sees everything.
 - Never describe what you're about to draw — just draw it.
+
+RICH CANVAS TOOLS — use these proactively:
+- add_embed_to_canvas: Embed a live YouTube video, Figma board, Google Map,
+  or any supported URL directly on the canvas as a live iframe.
+  Great for: "show me a video about X", "embed the Figma design", etc.
+  Supported: YouTube, Figma, CodeSandbox, Replit, Google Maps, GitHub Gist,
+             Spotify, Observable, Felt, Tldraw, Cal.com, Codesandbox, Excalidraw.
+- add_bookmark_to_canvas: Drop a rich link card (title + thumbnail) for any URL.
+  Great for: articles, docs, GitHub repos — anything not directly embeddable.
+- add_frame_to_canvas: Create a labeled container to group related shapes.
+  Great for: sections like "Problem", "Solution", "Evidence", "Counter".
 
 AUDIO RESPONSES:
 - Keep verbal responses under 8 words.
@@ -72,6 +90,8 @@ MODE: Think Mode (solo thinker / student)
   Bad:  "Capitalism causes inequality."
   Good: "What mechanisms drive that inequality specifically?"
 - Space provocations away from the shapes they challenge.
+- If the user draws 3+ connected concepts and goes quiet for 10+ seconds,
+  add one provocation without being asked.
 """
 
 _EXPLAIN_MODE_PROMPT = """
@@ -81,6 +101,8 @@ MODE: Explain Mode (teacher / presenter)
 - Generate supporting diagrams and visual summaries proactively.
 - Anticipate what comes next based on drawing + speech context.
 - Keep the canvas clean and well-organized for the audience.
+- Use add_embed_to_canvas to show relevant YouTube explanations when a topic
+  is mentioned that would benefit from a video demonstration.
 """
 
 
@@ -95,10 +117,10 @@ def create_agent(mode: str = "think") -> LlmAgent:
     """Build and return the ADK LlmAgent for AlphaSurface."""
     return LlmAgent(
         name="AlphaSurface",
-        model="gemini-2.5-flash-native-audio-preview-12-2025",  # current stable Live API model
+        model="gemini-2.5-flash-native-audio-preview-12-2025",
         description="Real-time voice+vision whiteboard co-thinker",
         instruction=build_system_prompt(mode),
-        tools=canvas_tools.ALL_TOOLS,         # ADK auto-generates schemas from type hints
+        tools=canvas_tools.ALL_TOOLS,
     )
 
 
@@ -106,31 +128,32 @@ def create_agent(mode: str = "think") -> LlmAgent:
 
 BroadcastFn = Callable[[dict], Awaitable[None]]
 
+
 class AlphaSurfaceAgent:
     """
     Manages one ADK Live session.
-    
+
     Lifecycle:
-      start()          — open ADK session, begin event loop
-      push_audio()     — feed PCM audio chunks from browser mic
+      start()             — open ADK session, begin event loop
+      push_audio()        — feed PCM audio chunks from browser mic
       push_canvas_image() — feed JPEG/PNG canvas snapshots for vision
-      stop()           — graceful shutdown
+      stop()              — graceful shutdown
     """
-    
+
     def __init__(self, broadcast_fn: BroadcastFn, mode: str = "think"):
         self.broadcast_fn = broadcast_fn
         self.mode = mode
 
         self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue()
-        self._image_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=2)  # keep only latest
+        self._image_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=2)
 
         self._live_queue: LiveRequestQueue | None = None
         self._runner: Runner | None = None
         self._session = None
         self.running = False
-        self._last_image_sent: float = 0.0  # rate-limit vision frames
+        self._last_image_sent: float = 0.0
 
-        # Signals that the agent's greeting turn has finished so mic audio flows
+        # Blocks mic audio until the greeting turn finishes
         self._ready = asyncio.Event()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -142,7 +165,6 @@ class AlphaSurfaceAgent:
             print("ERROR: GEMINI_API_KEY not set")
             return
 
-        # Retry loop — reconnect if the session drops
         while True:
             try:
                 await self._run_session()
@@ -159,12 +181,11 @@ class AlphaSurfaceAgent:
             try:
                 self._audio_queue.put_nowait(pcm_bytes)
             except asyncio.QueueFull:
-                pass  # drop oldest — live audio, latency > completeness
+                pass
 
     def push_canvas_image(self, image_bytes: bytes):
-        """Feed a canvas screenshot (JPEG or PNG) for Gemini vision."""
+        """Feed a canvas screenshot (PNG) for Gemini vision."""
         if self.running:
-            # Drain old frames — only the latest matters
             while not self._image_queue.empty():
                 try: self._image_queue.get_nowait()
                 except asyncio.QueueEmpty: break
@@ -183,7 +204,7 @@ class AlphaSurfaceAgent:
     async def _run_session(self):
         agent = create_agent(self.mode)
         session_service = InMemorySessionService()
-        
+
         self._runner = Runner(
             agent=agent,
             app_name=APP_NAME,
@@ -221,10 +242,9 @@ class AlphaSurfaceAgent:
 
     async def _send_loop(self):
         """
-        Drains audio and image queues and feeds them into the LiveRequestQueue.
+        Drains audio and image queues → LiveRequestQueue.
         Waits for _ready before forwarding mic audio (lets greeting finish first).
         """
-        # Send initial greeting prompt
         self._live_queue.send_content(
             content=types.Content(
                 role="user",
@@ -235,40 +255,36 @@ class AlphaSurfaceAgent:
                 ))]
             )
         )
-        
-        print("[Agent] Waiting for greeting to complete before forwarding mic audio...")
+
+        print("[Agent] Waiting for greeting to complete before forwarding mic audio…")
         await self._ready.wait()
         print("[Agent] Ready — mic audio now flowing")
 
-        # Minimum seconds between canvas image sends to avoid overwhelming Gemini
+        # Minimum seconds between canvas image sends
         IMAGE_INTERVAL = 10.0
 
         while self.running:
             try:
-                # Batch all pending audio chunks into one blob
+                # Batch all pending audio chunks
                 chunks = []
                 while not self._audio_queue.empty():
                     try: chunks.append(self._audio_queue.get_nowait())
                     except asyncio.QueueEmpty: break
                 if chunks:
-                    combined = b"".join(chunks)
                     self._live_queue.send_realtime(
                         types.Blob(
-                            data=combined,
+                            data=b"".join(chunks),
                             mime_type="audio/pcm;rate=16000"
                         )
                     )
 
-                # Send latest canvas image — rate-limited
+                # Rate-limited canvas image
                 now = time.monotonic()
                 if not self._image_queue.empty() and (now - self._last_image_sent) >= IMAGE_INTERVAL:
                     try:
                         frame = self._image_queue.get_nowait()
                         self._live_queue.send_realtime(
-                            types.Blob(
-                                data=frame,
-                                mime_type="image/png"
-                            )
+                            types.Blob(data=frame, mime_type="image/png")
                         )
                         self._last_image_sent = now
                     except asyncio.QueueEmpty:
@@ -279,14 +295,20 @@ class AlphaSurfaceAgent:
                         try: self._image_queue.get_nowait()
                         except asyncio.QueueEmpty: break
 
-                await asyncio.sleep(0.05)   # 50 ms polling cadence
+                await asyncio.sleep(0.05)
 
             except Exception as e:
                 print(f"[Agent] Send loop error: {e}")
                 break
 
     async def _receive_loop(self, run_config: RunConfig):
-        """Consume ADK events: audio → broadcast, turn_complete → unblock mic."""
+        """
+        Consume ADK events:
+          - audio parts   → broadcast audio_response to frontend
+          - interrupted   → broadcast ai_interrupted so frontend flushes playback
+          - tool calls    → broadcast ai_status: thinking
+          - turn_complete → unblock mic, broadcast ai_status: idle
+        """
         try:
             async for event in self._runner.run_live(
                 session=self._session,
@@ -319,6 +341,18 @@ class AlphaSurfaceAgent:
                         "payload": {"status": "thinking"},
                     })
 
+                # ── Barge-in / interruption ────────────────────────────────
+                # Gemini Live VAD fires this when it detects user speech mid-output.
+                # We tell the frontend to flush its audio queue immediately.
+                # Prerequisite: echoCancellation:true in frontend getUserMedia().
+                if getattr(event, "interrupted", False):
+                    print("[Agent] Barge-in detected — flushing frontend audio")
+                    await self.broadcast_fn({"type": "ai_interrupted", "payload": {}})
+                    await self.broadcast_fn({
+                        "type": "ai_status",
+                        "payload": {"status": "idle"},
+                    })
+
                 # ── Turn complete ──────────────────────────────────────────
                 if event.turn_complete:
                     if not self._ready.is_set():
@@ -342,7 +376,7 @@ class AlphaSurfaceAgent:
     async def _action_drain_loop(self):
         """
         Drains canvas_tools.canvas_action_queue and broadcasts each action.
-        This is how tool calls reach the browser — tools enqueue, we broadcast.
+        Tools enqueue → we broadcast → browser applies to tldraw.
         """
         while self.running:
             try:
