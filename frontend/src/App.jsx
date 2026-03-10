@@ -1,6 +1,18 @@
 import { useEffect, useState } from "react"
-import { Tldraw, useEditor, toRichText, getSnapshot, loadSnapshot, AssetRecordType } from "tldraw"
+import { Tldraw, useEditor, toRichText, getSnapshot, loadSnapshot, AssetRecordType, createShapeId } from "tldraw"
 import "tldraw/tldraw.css"
+
+// ── Singleton audio playback context ─────────────────────────────────────────
+// Shared across all audio_response messages so chunks are scheduled back-to-back.
+const _playback = {
+  _ctx: null,
+  get ctx() {
+    if (!this._ctx) this._ctx = new AudioContext({ sampleRate: 24000 })
+    return this._ctx
+  },
+  nextTime: 0,   // cursor: when the last scheduled chunk ends
+  enabled: true, // controlled by 🔊/🔇 button
+}
 
 // Handler for incoming WebSocket messages - extracted outside component to avoid stale closures
 function handleCanvasMessage(editor, message) {
@@ -71,29 +83,59 @@ function handleCanvasMessage(editor, message) {
       break
 
     // ── Bind Arrow (shape-to-shape connection) ────────────────
-    case "bind_arrow":
+    // tldraw v4: arrow props.start/end are always {x,y} numbers.
+    // Shape bindings are separate records created via editor.createBinding().
+    case "bind_arrow": {
       if (p.fromShapeId && p.toShapeId) {
         const fromShape = editor.getShape(p.fromShapeId)
         const toShape = editor.getShape(p.toShapeId)
         if (fromShape && toShape) {
-          // Calculate midpoint between shapes for arrow base position
-          const midX = (fromShape.x + toShape.x) / 2
-          const midY = (fromShape.y + toShape.y) / 2
+          const arrowId = createShapeId()
+          // Place arrow at centroid of the two shapes
+          const cx = (fromShape.x + toShape.x) / 2
+          const cy = (fromShape.y + toShape.y) / 2
           editor.createShape({
+            id: arrowId,
             type: "arrow",
-            x: midX,
-            y: midY,
+            x: cx, y: cy,
             props: {
-              start: { type: "binding", boundShapeId: p.fromShapeId },
-              end: { type: "binding", boundShapeId: p.toShapeId },
+              start: { x: 0, y: 0 },
+              end: { x: toShape.x - fromShape.x, y: toShape.y - fromShape.y },
               richText: toRichText(p.label ?? ""),
               color: p.color ?? "black",
               size: p.size ?? "m",
+              arrowheadEnd: "arrow",
+              arrowheadStart: "none",
+            }
+          })
+          // Bind start terminal to fromShape
+          editor.createBinding({
+            type: "arrow",
+            fromId: arrowId,
+            toId: p.fromShapeId,
+            props: {
+              terminal: "start",
+              normalizedAnchor: { x: 0.5, y: 0.5 },
+              isExact: false,
+              isPrecise: false,
+            }
+          })
+          // Bind end terminal to toShape
+          editor.createBinding({
+            type: "arrow",
+            fromId: arrowId,
+            toId: p.toShapeId,
+            props: {
+              terminal: "end",
+              normalizedAnchor: { x: 0.5, y: 0.5 },
+              isExact: false,
+              isPrecise: false,
             }
           })
         }
       }
       break
+    }
 
     // ── Image from URL ────────────────────────────────────────
     case "add_image": {
@@ -216,20 +258,30 @@ function handleCanvasMessage(editor, message) {
 
     // ── Audio response from Gemini ────────────────────────────
     case "audio_response": {
-      if (!p.data) break
+      if (!p.data || !_playback.enabled) break
       const raw = atob(p.data)
       const buf = new ArrayBuffer(raw.length)
       const view = new Uint8Array(buf)
       for (let i = 0; i < raw.length; i++) view[i] = raw.charCodeAt(i)
-      const audioCtx = new AudioContext({ sampleRate: 24000 })
-      const audioBuffer = audioCtx.createBuffer(1, buf.byteLength / 2, 24000)
+
+      // Resume context if browser suspended it (requires prior user gesture)
+      if (_playback.ctx.state === "suspended") _playback.ctx.resume()
+
+      const audioBuffer = _playback.ctx.createBuffer(1, buf.byteLength / 2, 24000)
       const channel = audioBuffer.getChannelData(0)
       const pcm = new Int16Array(buf)
       for (let i = 0; i < pcm.length; i++) channel[i] = pcm[i] / 32768
-      const source = audioCtx.createBufferSource()
+
+      const source = _playback.ctx.createBufferSource()
       source.buffer = audioBuffer
-      source.connect(audioCtx.destination)
-      source.start()
+      source.connect(_playback.ctx.destination)
+
+      // Schedule chunk immediately after the previous one ends.
+      // If we've fallen behind (gap between Gemini turns), snap to now.
+      const now = _playback.ctx.currentTime
+      if (_playback.nextTime < now) _playback.nextTime = now
+      source.start(_playback.nextTime)
+      _playback.nextTime += audioBuffer.duration
       break
     }
 
@@ -335,11 +387,9 @@ function AlphaSurfaceInner() {
         processor.onaudioprocess = (e) => {
           if (ws.readyState !== WebSocket.OPEN) return
           const input = e.inputBuffer.getChannelData(0)
-          // Simple energy-based VAD: skip silent frames so Gemini's turn detection works
-          let energy = 0
-          for (let i = 0; i < input.length; i++) energy += input[i] * input[i]
-          const rms = Math.sqrt(energy / input.length)
-          if (rms < 0.01) return  // below noise floor — don't send
+          // Send ALL frames (including silence) — Gemini's built-in auto-VAD needs
+          // a continuous stream to reliably detect speech onset and offset.
+          // Dropping silent frames confuses turn detection.
           const pcm16 = new Int16Array(input.length)
           for (let i = 0; i < input.length; i++) {
             pcm16[i] = Math.max(-32768, Math.min(32767, input[i] * 32768))
@@ -348,7 +398,12 @@ function AlphaSurfaceInner() {
           ws.send(JSON.stringify({ type: "audio_chunk", payload: { data: base64 } }))
         }
         source.connect(processor)
-        processor.connect(audioContext.destination)
+        // Silent sink: keeps the audio graph ticking (onaudioprocess fires) but
+        // gain=0 means mic is NOT routed to speakers — prevents echo feedback.
+        const silentSink = audioContext.createGain()
+        silentSink.gain.value = 0
+        processor.connect(silentSink)
+        silentSink.connect(audioContext.destination)
         console.log("Microphone active — streaming to backend")
       } catch (err) {
         console.warn("Mic unavailable:", err.message)
@@ -366,9 +421,10 @@ function AlphaSurfaceInner() {
   }, [ws])
 
   useEffect(() => {
-    if (!ws) return
-    ws.send(JSON.stringify({ type: "set_audio", payload: { enabled: audioEnabled } }))
-  }, [audioEnabled, ws])
+    _playback.enabled = audioEnabled
+    // Resume AudioContext on first user interaction (browser autoplay policy)
+    if (audioEnabled && _playback.ctx.state === "suspended") _playback.ctx.resume()
+  }, [audioEnabled])
 
   useEffect(() => {
     if (!ws || !editor) return
