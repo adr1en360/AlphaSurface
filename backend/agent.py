@@ -1,21 +1,17 @@
 """
 AlphaSurface — ADK-based agent for real-time voice + vision canvas control.
 
-Architecture:
-  - google-adk LlmAgent owns the Gemini model + tool declarations (auto-generated
-    from tools.py type hints — no manual schema writing).
-  - ADK Runner manages the session lifecycle.
-  - LiveRequestQueue bridges the async WebSocket streams (audio, images) into
-    the ADK run_live() event loop.
-  - Canvas actions flow: Gemini tool call → tools.py enqueues action →
-    main.py drains queue → WebSocket broadcast to browser.
-
-Interruption (barge-in):
-  Gemini Live API has auto-VAD on by default. When it detects user speech during
-  AI output, it sends a turn_complete event with interrupted=True. We broadcast
-  an "ai_interrupted" message so the frontend can flush its audio playback queue.
-  The key prerequisite on the frontend is echoCancellation:true in getUserMedia —
-  without it the mic hears the AI's own voice and VAD never fires.
+Key changes from v1:
+  - Proactive vision: when a canvas image arrives, a soft text nudge is sent
+    alongside it so Gemini can act on what it SEES, not just what it hears.
+  - Interruption: event.interrupted → broadcast ai_interrupted → frontend
+    flushes audio playback queue immediately (barge-in works).
+  - System prompt completely rewritten:
+      • Only available tools documented
+      • Sarkar provocations are genuine open questions, never conclusions
+      • Spatial overlap prevention with explicit rules
+      • Non-intrusive philosophy enforced
+  - Config: accepts web_search flag from launch UI
 """
 
 import asyncio
@@ -33,138 +29,206 @@ from google.genai import types
 
 import tools as canvas_tools
 
-# ── Session constants ─────────────────────────────────────────────────────────
 APP_NAME = "alphasurface"
 USER_ID = "user"
 SESSION_ID = "canvas_session"
 
-# ── Mode-aware system prompts ─────────────────────────────────────────────────
+# ── System prompts ────────────────────────────────────────────────────────────
+
 _BASE_PROMPT = """
-You are AlphaSurface, an AI co-thinker on a shared infinite-canvas whiteboard.
+You are AlphaSurface — a silent, spatial AI co-thinker on a shared infinite canvas.
 
-CORE PHILOSOPHY (from Advait Sarkar's research):
-- Challenge and support human thinking — never replace it.
-- You work ON the canvas, not in a chat box. Actions speak louder than words.
-- Be spatially aware: spread shapes out, use empty space, avoid overlapping.
+═══════════════════════════════════════════════════════
+CORE PHILOSOPHY 
+═══════════════════════════════════════════════════════
+You work ALONGSIDE the human, never INSTEAD of them.
+You challenge and support thinking — you do NOT compete with the process.
+The canvas is THEIRS. You are a guest on it.
+You are NON-INTRUSIVE: one action at a time, spaced out, unannounced.
 
-TOOL USAGE — MANDATORY:
-- ALWAYS call a canvas tool when the user mentions a concept, asks to visualize
-  something, or when you want to provoke reflection.
-- Call list_canvas_shapes BEFORE bind_arrow, delete_shapes, focus_shape, or
-  move_shape — you need real shape IDs.
-- After adding 3+ shapes, call zoom_to_fit so the user sees everything.
-- Never describe what you're about to draw — just draw it.
+═══════════════════════════════════════════════════════
+WHAT YOU CAN SEE
+═══════════════════════════════════════════════════════
+You receive:
+  1. A live canvas screenshot (image) every ~10 seconds
+  2. Continuous microphone audio from the user
+  3. Shape inventory via list_canvas_shapes (call before any edit)
 
-RICH CANVAS TOOLS — use these proactively:
-- add_embed_to_canvas: Embed a live YouTube video, Figma board, Google Map,
-  or any supported URL directly on the canvas as a live iframe.
-  Great for: "show me a video about X", "embed the Figma design", etc.
-  Supported: YouTube, Figma, CodeSandbox, Replit, Google Maps, GitHub Gist,
-             Spotify, Observable, Felt, Tldraw, Cal.com, Codesandbox, Excalidraw.
-- add_bookmark_to_canvas: Drop a rich link card (title + thumbnail) for any URL.
-  Great for: articles, docs, GitHub repos — anything not directly embeddable.
-- add_frame_to_canvas: Create a labeled container to group related shapes.
-  Great for: sections like "Problem", "Solution", "Evidence", "Counter".
+When you receive a canvas image, look carefully:
+  - What has the user drawn? (shapes, freehand sketches, text, arrows)
+  - Are there freehand marker strokes? Treat them as meaningful — they show thinking.
+  - Is there something unconnected that could benefit from a link?
+  - Are there claims that lack evidence or could be challenged?
+  - Is there dead space you could use for a provocation?
 
-AUDIO RESPONSES:
-- Keep verbal responses under 8 words.
-- Examples: "Got it", "Adding that now", "Connecting those ideas", "Done".
-- Never read out shape content aloud — the user can see the canvas.
-- Speak only to acknowledge, clarify, or confirm.
+═══════════════════════════════════════════════════════
+AVAILABLE TOOLS  (only call tools in this list)
+═══════════════════════════════════════════════════════
+WRITE:    add_text_to_canvas, add_note_to_canvas, add_geo_to_canvas,
+          add_arrow_to_canvas, bind_arrow
+EMBED:    add_embed_to_canvas (YouTube/Figma/Maps live iframe),
+          add_bookmark_to_canvas (rich link card)
+EDIT:     move_shape, update_shape, delete_shapes
+NAVIGATE: zoom_to_fit, focus_shape, select_shapes, clear_canvas
+READ:     list_canvas_shapes ← ALWAYS call before any edit/bind/delete
 
-CANVAS POSITIONING:
-- Use varied positions: x 100–1400, y 80–900.
-- Leave at least 120px between shapes.
-- You can see the canvas image — place new shapes in empty regions.
+DO NOT call: add_image, add_draw, add_frame, group_shapes,
+             ungroup_shapes, resize_shape, reorder_shape,
+             set_camera, process_information
+These do not exist — calling them will silently fail.
+
+═══════════════════════════════════════════════════════
+SPATIAL RULES  (overlap prevention)
+═══════════════════════════════════════════════════════
+1. Call list_canvas_shapes to get current shape positions (x, y, w, h).
+2. Never place a shape within 150px of an existing shape's bounding box.
+3. Use the full canvas space: x range 80–1500, y range 60–950.
+4. Prefer placing shapes in empty quadrants you can see in the screenshot.
+5. After placing 3+ shapes, call zoom_to_fit.
+6. Do NOT cluster everything in the center.
+
+═══════════════════════════════════════════════════════
+AUDIO RULES
+═══════════════════════════════════════════════════════
+- Verbal responses: MAXIMUM 6 words. ("Done", "Adding now", "Got it", "Connecting those")
+- Never read shape content aloud. The user can see the canvas.
+- Never explain what you're about to do. Just do it.
+- Do not narrate your tool calls.
+
+═══════════════════════════════════════════════════════
+FREEHAND SKETCH AWARENESS
+═══════════════════════════════════════════════════════
+The user may draw with the marker/pencil tool. These appear in the canvas image
+as freehand strokes — they will NOT appear in list_canvas_shapes.
+You can STILL see them in the screenshot.
+When you see freehand drawings:
+  - Acknowledge them visually (place a related note nearby)
+  - Treat them as ideas in progress, not complete thoughts
+  - Do NOT ask the user to explain them — infer from context
 """
 
 _THINK_MODE_PROMPT = """
-MODE: Think Mode (solo thinker / student)
-- Start with a blank canvas. Infer intent from what the user draws and says.
-- Inject "Sarkar provocations" as violet sticky notes:
-    • Counterarguments to stated positions
-    • Missing connections between concepts
-    • Flagged logical inconsistencies
-    • Blind spots or unstated assumptions
-- Provocations should be questions or fragments, NOT answers.
-  Bad:  "Capitalism causes inequality."
-  Good: "What mechanisms drive that inequality specifically?"
-- Space provocations away from the shapes they challenge.
-- If the user draws 3+ connected concepts and goes quiet for 10+ seconds,
-  add one provocation without being asked.
+═══════════════════════════════════════════════════════
+MODE: Think Mode  (solo thinker / student)
+═══════════════════════════════════════════════════════
+The canvas starts blank. The user is developing their own thinking.
+Your role: inject quiet provocations — never answers.
+
+PROVOCATION RULES:
+  Color: always violet sticky notes
+  Placement: near the shape you're provoking, but not overlapping it (150px away)
+  Frequency: maximum 1 provocation per 30 seconds of quiet
+  Trigger: place a provocation when you notice:
+    - A concept with no connection to anything else
+    - A claim presented as fact with no evidence nearby
+    - Two ideas that seem to contradict each other
+    - An assumption so obvious the user hasn't questioned it
+
+PROVOCATION FORMAT — OPEN QUESTIONS ONLY:
+  ✅ GOOD (open, specific, genuinely uncertain):
+    "What breaks this if X changes?"
+    "Who benefits from the opposite view?"
+    "What would falsify this?"
+    "What's the simplest case where this fails?"
+    "What does 'better' mean here exactly?"
+
+  ❌ BAD (conclusions, statements, answers):
+    "This assumes capitalism causes inequality."
+    "Consider the systemic factors."
+    "This lacks evidence."
+    "You should think about X."
+
+PROACTIVE VISION:
+  When you receive a canvas image and the user has been quiet for 10+ seconds:
+  - Scan for the above triggers
+  - If you find one, place a single violet provocation
+  - No audio. No narration. Just the note.
+  - Then wait. Do not cascade with more.
 """
 
 _EXPLAIN_MODE_PROMPT = """
-MODE: Explain Mode (teacher / presenter)
-- The user is presenting to an audience. Never interrupt their flow.
-- Surface relevant document sections as blue rectangles.
-- Generate supporting diagrams and visual summaries proactively.
-- Anticipate what comes next based on drawing + speech context.
-- Keep the canvas clean and well-organized for the audience.
-- Use add_embed_to_canvas to show relevant YouTube explanations when a topic
-  is mentioned that would benefit from a video demonstration.
+═══════════════════════════════════════════════════════
+MODE: Explain Mode  (teacher / presenter)
+═══════════════════════════════════════════════════════
+The user is presenting to an audience. Your job is to SUPPORT, not interrupt.
+
+RULES:
+  - Never act during mid-sentence — wait for natural pauses
+  - Surface relevant concepts as blue geo shapes near what's being drawn
+  - Use add_embed_to_canvas for YouTube when a topic benefits from video
+  - Use add_bookmark_to_canvas for reference links
+  - Anticipate: if they just drew "photosynthesis", prepare a related concept
+  - Keep the canvas organized — new shapes go in clean empty areas
+
+WHEN TO ACT:
+  - User mentions a concept → place a supporting definition nearby
+  - User asks a rhetorical question → place the answer as a geo shape
+  - User references an external resource → place a bookmark
+  - Canvas gets crowded → call zoom_to_fit
+
+NEVER:
+  - Place a shape that contradicts what the presenter just said
+  - Add provocations (that's Think Mode)
+  - Interrupt mid-explanation
 """
 
 
-def build_system_prompt(mode: str) -> str:
+def build_system_prompt(mode: str, web_search: bool = False) -> str:
     suffix = _THINK_MODE_PROMPT if mode == "think" else _EXPLAIN_MODE_PROMPT
-    return _BASE_PROMPT.strip() + "\n\n" + suffix.strip()
+    prompt = _BASE_PROMPT.strip() + "\n\n" + suffix.strip()
+    if web_search:
+        prompt += """
+
+═══════════════════════════════════════════════════════
+WEB SEARCH
+═══════════════════════════════════════════════════════
+You have web search enabled. When the user asks about a real-world fact,
+recent event, or resource you don't know, search for it and place a
+bookmark on the canvas with the best result URL.
+Do NOT search for things you already know.
+"""
+    return prompt
 
 
-# ── Agent factory ─────────────────────────────────────────────────────────────
-
-def create_agent(mode: str = "think") -> LlmAgent:
-    """Build and return the ADK LlmAgent for AlphaSurface."""
+def create_agent(mode: str = "think", web_search: bool = False) -> LlmAgent:
     return LlmAgent(
         name="AlphaSurface",
         model="gemini-2.5-flash-native-audio-preview-12-2025",
         description="Real-time voice+vision whiteboard co-thinker",
-        instruction=build_system_prompt(mode),
+        instruction=build_system_prompt(mode, web_search),
         tools=canvas_tools.ALL_TOOLS,
     )
 
 
-# ── Main session class ────────────────────────────────────────────────────────
+# ── Session class ─────────────────────────────────────────────────────────────
 
 BroadcastFn = Callable[[dict], Awaitable[None]]
 
 
 class AlphaSurfaceAgent:
-    """
-    Manages one ADK Live session.
-
-    Lifecycle:
-      start()             — open ADK session, begin event loop
-      push_audio()        — feed PCM audio chunks from browser mic
-      push_canvas_image() — feed JPEG/PNG canvas snapshots for vision
-      stop()              — graceful shutdown
-    """
-
-    def __init__(self, broadcast_fn: BroadcastFn, mode: str = "think"):
+    def __init__(self, broadcast_fn: BroadcastFn, mode: str = "think", web_search: bool = False):
         self.broadcast_fn = broadcast_fn
         self.mode = mode
+        self.web_search = web_search
 
         self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue()
-        self._image_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=2)
+        self._image_queue: asyncio.Queue[tuple[bytes, str]] = asyncio.Queue(maxsize=2)
 
         self._live_queue: LiveRequestQueue | None = None
         self._runner: Runner | None = None
         self._session = None
         self.running = False
         self._last_image_sent: float = 0.0
-
-        # Blocks mic audio until the greeting turn finishes
+        self._last_image_nudge: float = 0.0  # rate-limit proactive nudges
         self._ready = asyncio.Event()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     async def start(self):
-        """Entry point — called once from FastAPI startup."""
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
             print("ERROR: GEMINI_API_KEY not set")
             return
-
         while True:
             try:
                 await self._run_session()
@@ -175,22 +239,27 @@ class AlphaSurfaceAgent:
                 self._ready.clear()
                 await asyncio.sleep(5)
 
+    def reconfigure(self, mode: str = None, web_search: bool = None):
+        """Update mode/web_search — takes effect on next session restart."""
+        if mode is not None:
+            self.mode = mode
+        if web_search is not None:
+            self.web_search = web_search
+
     def push_audio(self, pcm_bytes: bytes):
-        """Feed raw PCM audio (16 kHz, 16-bit, mono) from the browser mic."""
         if self.running and self._ready.is_set():
             try:
                 self._audio_queue.put_nowait(pcm_bytes)
             except asyncio.QueueFull:
                 pass
 
-    def push_canvas_image(self, image_bytes: bytes):
-        """Feed a canvas screenshot (PNG) for Gemini vision."""
+    def push_canvas_image(self, image_bytes: bytes, mime: str = "image/png"):
         if self.running:
             while not self._image_queue.empty():
                 try: self._image_queue.get_nowait()
                 except asyncio.QueueEmpty: break
             try:
-                self._image_queue.put_nowait(image_bytes)
+                self._image_queue.put_nowait((image_bytes, mime))
             except asyncio.QueueFull:
                 pass
 
@@ -199,10 +268,10 @@ class AlphaSurfaceAgent:
         if self._live_queue:
             self._live_queue.close()
 
-    # ── Internal session loop ─────────────────────────────────────────────────
+    # ── Session lifecycle ─────────────────────────────────────────────────────
 
     async def _run_session(self):
-        agent = create_agent(self.mode)
+        agent = create_agent(self.mode, self.web_search)
         session_service = InMemorySessionService()
 
         self._runner = Runner(
@@ -210,29 +279,25 @@ class AlphaSurfaceAgent:
             app_name=APP_NAME,
             session_service=session_service,
         )
-
         self._session = await session_service.create_session(
             app_name=APP_NAME,
             user_id=USER_ID,
             session_id=SESSION_ID,
         )
-
         self._live_queue = LiveRequestQueue()
 
         run_config = RunConfig(
             streaming_mode=StreamingMode.BIDI,
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Aoede"
-                    )
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Aoede")
                 )
             ),
             response_modalities=[types.Modality.AUDIO],
         )
 
         self.running = True
-        print(f"[Agent] ADK session open — mode: {self.mode}")
+        print(f"[Agent] Session open — mode={self.mode} web_search={self.web_search}")
 
         await asyncio.gather(
             self._send_loop(),
@@ -241,56 +306,79 @@ class AlphaSurfaceAgent:
         )
 
     async def _send_loop(self):
-        """
-        Drains audio and image queues → LiveRequestQueue.
-        Waits for _ready before forwarding mic audio (lets greeting finish first).
-        """
+        """Feed audio + canvas images into the LiveRequestQueue."""
+        # Initial greeting
         self._live_queue.send_content(
             content=types.Content(
                 role="user",
                 parts=[types.Part(text=(
-                    "You are now connected to AlphaSurface. "
-                    "Briefly greet the user with audio (under 6 words), "
-                    "then call add_note_to_canvas with a short welcome message."
+                    "AlphaSurface is now connected. "
+                    "Greet the user in under 5 words (audio only), "
+                    "then place one welcome sticky note on the canvas."
                 ))]
             )
         )
 
-        print("[Agent] Waiting for greeting to complete before forwarding mic audio…")
+        print("[Agent] Waiting for greeting…")
         await self._ready.wait()
-        print("[Agent] Ready — mic audio now flowing")
+        print("[Agent] Ready — mic live")
 
-        # Minimum seconds between canvas image sends
-        IMAGE_INTERVAL = 10.0
+        IMAGE_INTERVAL = 20.0   # seconds between canvas image sends to Gemini
+        NUDGE_INTERVAL = 30.0   # seconds between proactive vision nudges
 
         while self.running:
             try:
-                # Batch all pending audio chunks
+                # ── Audio ──────────────────────────────────────────────────
                 chunks = []
                 while not self._audio_queue.empty():
                     try: chunks.append(self._audio_queue.get_nowait())
                     except asyncio.QueueEmpty: break
                 if chunks:
                     self._live_queue.send_realtime(
-                        types.Blob(
-                            data=b"".join(chunks),
-                            mime_type="audio/pcm;rate=16000"
-                        )
+                        types.Blob(data=b"".join(chunks), mime_type="audio/pcm;rate=16000")
                     )
 
-                # Rate-limited canvas image
+                # ── Canvas image + proactive nudge ─────────────────────────
                 now = time.monotonic()
                 if not self._image_queue.empty() and (now - self._last_image_sent) >= IMAGE_INTERVAL:
                     try:
-                        frame = self._image_queue.get_nowait()
-                        self._live_queue.send_realtime(
-                            types.Blob(data=frame, mime_type="image/png")
-                        )
+                        frame, frame_mime = self._image_queue.get_nowait()
+
+                        # Decide whether to include a proactive vision nudge.
+                        # This makes the agent act on what it SEES, not just hears.
+                        should_nudge = (now - self._last_image_nudge) >= NUDGE_INTERVAL
+
+                        if should_nudge:
+                            # Send image + text together so Gemini analyzes both
+                            self._live_queue.send_content(
+                                content=types.Content(
+                                    role="user",
+                                    parts=[
+                                        types.Part(
+                                            inline_data=types.Blob(data=frame, mime_type=frame_mime)
+                                        ),
+                                        types.Part(text=(
+                                            "Canvas updated. Look carefully at what you see — "
+                                            "including any freehand sketches or marker strokes. "
+                                            "If you notice an unconnected idea, a missing link, "
+                                            "or a provocation opportunity, act on it silently. "
+                                            "If nothing stands out, do nothing."
+                                        ))
+                                    ]
+                                )
+                            )
+                            self._last_image_nudge = now
+                        else:
+                            # Send image only (vision context update, no trigger)
+                            self._live_queue.send_realtime(
+                                types.Blob(data=frame, mime_type=frame_mime)
+                            )
+
                         self._last_image_sent = now
                     except asyncio.QueueEmpty:
                         pass
                 elif not self._image_queue.empty():
-                    # Drain stale frames we won't send yet
+                    # Drain stale frames
                     while not self._image_queue.empty():
                         try: self._image_queue.get_nowait()
                         except asyncio.QueueEmpty: break
@@ -302,13 +390,6 @@ class AlphaSurfaceAgent:
                 break
 
     async def _receive_loop(self, run_config: RunConfig):
-        """
-        Consume ADK events:
-          - audio parts   → broadcast audio_response to frontend
-          - interrupted   → broadcast ai_interrupted so frontend flushes playback
-          - tool calls    → broadcast ai_status: thinking
-          - turn_complete → unblock mic, broadcast ai_status: idle
-        """
         try:
             async for event in self._runner.run_live(
                 session=self._session,
@@ -321,10 +402,7 @@ class AlphaSurfaceAgent:
                         if hasattr(part, "inline_data") and part.inline_data:
                             audio_data = part.inline_data.data
                             if audio_data:
-                                await self.broadcast_fn({
-                                    "type": "ai_status",
-                                    "payload": {"status": "speaking"},
-                                })
+                                await self.broadcast_fn({"type": "ai_status", "payload": {"status": "speaking"}})
                                 await self.broadcast_fn({
                                     "type": "audio_response",
                                     "payload": {
@@ -336,48 +414,33 @@ class AlphaSurfaceAgent:
 
                 # ── Tool call in progress ──────────────────────────────────
                 if event.get_function_calls():
-                    await self.broadcast_fn({
-                        "type": "ai_status",
-                        "payload": {"status": "thinking"},
-                    })
+                    await self.broadcast_fn({"type": "ai_status", "payload": {"status": "thinking"}})
 
-                # ── Barge-in / interruption ────────────────────────────────
-                # Gemini Live VAD fires this when it detects user speech mid-output.
-                # We tell the frontend to flush its audio queue immediately.
-                # Prerequisite: echoCancellation:true in frontend getUserMedia().
+                # ── Barge-in interrupt ─────────────────────────────────────
+                # Fires when Gemini VAD detects user speech during AI output.
+                # Frontend must flush its audio playback queue.
+                # Requires echoCancellation:true in browser getUserMedia().
                 if getattr(event, "interrupted", False):
-                    print("[Agent] Barge-in detected — flushing frontend audio")
+                    print("[Agent] Barge-in — flushing frontend audio")
                     await self.broadcast_fn({"type": "ai_interrupted", "payload": {}})
-                    await self.broadcast_fn({
-                        "type": "ai_status",
-                        "payload": {"status": "idle"},
-                    })
+                    await self.broadcast_fn({"type": "ai_status", "payload": {"status": "idle"}})
 
                 # ── Turn complete ──────────────────────────────────────────
                 if event.turn_complete:
                     if not self._ready.is_set():
                         self._ready.set()
-                        print("[Agent] Greeting turn done — mic live")
-                    await self.broadcast_fn({
-                        "type": "ai_status",
-                        "payload": {"status": "idle"},
-                    })
+                        print("[Agent] Greeting done — mic live")
+                    await self.broadcast_fn({"type": "ai_status", "payload": {"status": "idle"}})
 
         except Exception as e:
             print(f"[Agent] Receive loop error: {e}")
             import traceback; traceback.print_exc()
         finally:
             self.running = False
-            await self.broadcast_fn({
-                "type": "ai_status",
-                "payload": {"status": "disconnected"},
-            })
+            await self.broadcast_fn({"type": "ai_status", "payload": {"status": "disconnected"}})
 
     async def _action_drain_loop(self):
-        """
-        Drains canvas_tools.canvas_action_queue and broadcasts each action.
-        Tools enqueue → we broadcast → browser applies to tldraw.
-        """
+        """Drain canvas_tools.canvas_action_queue → broadcast to browser."""
         while self.running:
             try:
                 action = canvas_tools.canvas_action_queue.get_nowait()

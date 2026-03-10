@@ -3,8 +3,7 @@ AlphaSurface — FastAPI WebSocket server + ADK agent orchestrator.
 
 Message flow:
   Browser → WebSocket → main.py → agent.push_audio / push_canvas_image
-  Agent tool call → tools.py enqueues action → agent._action_drain_loop
-      → broadcast_fn → WebSocket → Browser (tldraw)
+  Agent tool call → tools.py enqueues → agent._action_drain_loop → broadcast → browser
 
 Run:
   uvicorn main:app --reload --port 8000
@@ -25,36 +24,19 @@ import tools as canvas_tools
 
 load_dotenv()
 
-# ── WebSocket client registry ─────────────────────────────────────────────────
+# ── WebSocket registry ────────────────────────────────────────────────────────
 connected_clients: list[WebSocket] = []
-_first_client_connected = asyncio.Event()
 
-# All message types that the backend can forward directly to all browsers.
-# Add new shape types here when you add them to tools.py + App.jsx.
 CANVAS_PASSTHROUGH_TYPES = {
-    "add_text",
-    "add_note",
-    "add_geo",
-    "add_arrow",
-    "bind_arrow",
-    "add_image",
-    "add_embed",        # Live iframe (YouTube, Figma, Maps, etc.)
-    "add_bookmark",     # Rich link card
-    "add_frame",
-    "add_draw",
-    "delete_shapes",
-    "update_shape",
-    "move_shape",
-    "clear_canvas",
-    "set_camera",
-    "zoom_to_fit",
-    "focus_shape",
-    "select_shapes",
+    "add_text", "add_note", "add_geo", "add_arrow",
+    "bind_arrow", "add_embed", "add_bookmark",
+    "delete_shapes", "update_shape", "move_shape",
+    "clear_canvas", "zoom_to_fit", "focus_shape",
+    "select_shapes", "ai_interrupted", "ai_status",
 }
 
 
 async def broadcast(message: dict):
-    """Fan-out a message to every connected browser tab."""
     dead: list[WebSocket] = []
     text = json.dumps(message)
     for ws in connected_clients:
@@ -63,17 +45,18 @@ async def broadcast(message: dict):
         except Exception:
             dead.append(ws)
     for ws in dead:
-        connected_clients.remove(ws)
+        if ws in connected_clients:
+            connected_clients.remove(ws)
 
 
-# ── Agent singleton ────────────────────────────────────────────────────────────
+# ── Agent singleton ───────────────────────────────────────────────────────────
 agent = AlphaSurfaceAgent(
     broadcast_fn=broadcast,
     mode=os.environ.get("ALPHASURFACE_MODE", "think"),
+    web_search=os.environ.get("ALPHASURFACE_WEB_SEARCH", "false").lower() == "true",
 )
 
 
-# ── App lifecycle ──────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.create_task(agent.start())
@@ -86,7 +69,7 @@ app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",   # Vite dev server
+        "http://localhost:5173",
         "http://localhost:3000",
     ],
     allow_methods=["*"],
@@ -94,31 +77,29 @@ app.add_middleware(
 )
 
 
-# ── Health check ──────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
     return {
         "status": "ok",
         "agent_running": agent.running,
         "mode": agent.mode,
+        "web_search": agent.web_search,
         "clients": len(connected_clients),
     }
 
 
-# ── WebSocket endpoint ────────────────────────────────────────────────────────
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     connected_clients.append(websocket)
-    _first_client_connected.set()
     print(f"[WS] Client connected ({len(connected_clients)} total)")
 
-    # Catch new clients up on canvas shape IDs
+    # Sync new client with current canvas state
     if canvas_tools.canvas_state["shape_count"] > 0:
         await websocket.send_text(json.dumps({
             "type": "canvas_snapshot",
             "payload": {
-                "shapeIds": canvas_tools.canvas_state["shape_ids"],
+                "shapes": canvas_tools.canvas_state["shapes"],
                 "shape_count": canvas_tools.canvas_state["shape_count"],
             },
         }))
@@ -130,41 +111,52 @@ async def websocket_endpoint(websocket: WebSocket):
             msg_type: str = message.get("type", "")
             payload: dict = message.get("payload", {})
 
-            # ── Canvas shape inventory ─────────────────────────────────────
+            # ── Canvas shape inventory (rich: includes bounds) ────────────
             if msg_type == "canvas_snapshot":
-                shape_ids = payload.get("shapeIds", [])
+                shapes = payload.get("shapes", [])
                 shape_count = payload.get("shape_count", 0)
-                # Update tools.py mirror so bind_arrow etc. use real IDs
-                canvas_tools.update_canvas_state(shape_ids, shape_count)
-                # Don't rebroadcast — backend state tracking only
+                canvas_tools.update_canvas_state(shapes, shape_count)
 
-            # ── Canvas screenshot for Gemini vision ───────────────────────
+            # ── Canvas screenshot → Gemini vision ─────────────────────────
             elif msg_type == "canvas_image":
-                jpeg_b64 = payload.get("data", "")
-                if jpeg_b64:
-                    agent.push_canvas_image(base64.b64decode(jpeg_b64))
+                b64 = payload.get("data", "")
+                mime = payload.get("mime", "image/png")
+                if b64:
+                    agent.push_canvas_image(base64.b64decode(b64), mime)
 
-            # ── Microphone audio stream ────────────────────────────────────
+            # ── Microphone audio ──────────────────────────────────────────
             elif msg_type == "audio_chunk":
-                pcm_b64 = payload.get("data", "")
-                if pcm_b64:
-                    agent.push_audio(base64.b64decode(pcm_b64))
+                b64 = payload.get("data", "")
+                if b64:
+                    agent.push_audio(base64.b64decode(b64))
 
-            # ── Audio on/off toggle (frontend local mute only) ─────────────
-            elif msg_type == "set_audio":
-                pass  # Audio is always driven by Gemini Live — frontend mutes locally
+            # ── Launch config from settings UI ────────────────────────────
+            # Sent once when user clicks "Launch" in the config screen.
+            # Reconfigures the agent mode and web_search flag.
+            elif msg_type == "set_config":
+                mode = payload.get("mode", agent.mode)
+                web_search = payload.get("webSearch", agent.web_search)
+                agent.reconfigure(mode=mode, web_search=web_search)
+                print(f"[WS] Config updated: mode={mode} web_search={web_search}")
+                await websocket.send_text(json.dumps({
+                    "type": "config_ack",
+                    "payload": {"mode": mode, "webSearch": web_search}
+                }))
 
-            # ── Canvas action passthrough ──────────────────────────────────
-            # Messages in this set are forwarded directly to all browser clients.
-            # Typically used by test scripts or direct API callers.
+            # ── Canvas action passthrough ─────────────────────────────────
             elif msg_type in CANVAS_PASSTHROUGH_TYPES:
                 await broadcast(message)
+
+            # ── Local mute toggle — no backend action needed ──────────────
+            elif msg_type == "set_audio":
+                pass
 
             else:
                 print(f"[WS] Unknown message type: {msg_type!r}")
 
     except WebSocketDisconnect:
-        connected_clients.remove(websocket)
+        if websocket in connected_clients:
+            connected_clients.remove(websocket)
         print(f"[WS] Client disconnected ({len(connected_clients)} remaining)")
     except Exception as e:
         print(f"[WS] Error: {e}")
