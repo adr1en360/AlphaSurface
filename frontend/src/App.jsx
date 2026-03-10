@@ -666,7 +666,7 @@ function AlphaSurfaceInner({ config }) {
         }} />
       )}
 
-      {/* AI status pill + mute — top center, combined */}
+      {/* ── Status pill ── */}
       <button
         onClick={() => {
           const next = !muted
@@ -676,32 +676,67 @@ function AlphaSurfaceInner({ config }) {
           if (!next && _playback.ctx.state === "suspended") _playback.ctx.resume()
           if (next) flushAudioPlayback()
         }}
-        title={muted ? "Unmute" : "Click to mute"}
+        title={muted ? "Click to unmute" : "Click to mute"}
         style={{
           position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)",
-          zIndex: 9999, display: "flex", alignItems: "center", gap: 7,
-          padding: "5px 12px", borderRadius: 999,
-          background: muted ? "rgba(239,68,68,0.12)" : "rgba(10,10,10,0.65)",
-          backdropFilter: "blur(10px)",
-          border: muted ? "1px solid rgba(239,68,68,0.35)" : "1px solid rgba(255,255,255,0.07)",
-          color: muted ? "#f87171" : "#d1d5db",
-          fontSize: 11, fontWeight: 500, userSelect: "none",
-          fontFamily: "'Inter','Segoe UI',sans-serif",
-          cursor: "pointer",
-          outline: "none",
-          WebkitAppearance: "none",
+          zIndex: 9999, display: "flex", alignItems: "center", gap: 0,
+          padding: 0, borderRadius: 999,
+          background: "rgba(6,6,8,0.78)",
+          backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
+          border: "1px solid rgba(255,255,255,0.06)",
+          boxShadow: "0 2px 12px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.03)",
+          fontFamily: "'Inter','Segoe UI',system-ui,sans-serif",
+          fontSize: 10, fontWeight: 500, letterSpacing: "0.02em",
+          userSelect: "none", cursor: "pointer", outline: "none", WebkitAppearance: "none",
+          transition: "border-color 0.25s ease, box-shadow 0.25s ease",
+        }}
+        onMouseEnter={e => {
+          e.currentTarget.style.borderColor = "rgba(255,255,255,0.13)"
+          e.currentTarget.style.boxShadow = "0 2px 20px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.05)"
+        }}
+        onMouseLeave={e => {
+          e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)"
+          e.currentTarget.style.boxShadow = "0 2px 12px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.03)"
         }}
       >
-        <div style={{
-          width: 7, height: 7, borderRadius: "50%",
-          background: muted ? "#ef4444" : status.dot,
-          animation: (!muted && status.pulse) ? "sPulse 1.2s ease-in-out infinite" : "none",
-          flexShrink: 0,
-        }} />
-        {muted ? "Muted" : status.label}
-        <span style={{ color: "#374151", margin: "0 4px" }}>·</span>
-        <span style={{ color: "#e2e8f0", textTransform: "capitalize" }}>{config.mode}</span>
-        {config.webSearch && <><span style={{ color: "#374151", margin: "0 4px" }}>·</span><span style={{ color: "#60a5fa", fontSize: 10 }}>Web</span></>}
+        {/* AI state — always visible */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px 5px 13px" }}>
+          <div style={{
+            width: 6, height: 6, borderRadius: "50%",
+            background: status.dot,
+            boxShadow: `0 0 7px 1px ${status.dot}45`,
+            animation: status.pulse ? "sPulse 1.2s ease-in-out infinite" : "none",
+            flexShrink: 0, transition: "background 0.3s, box-shadow 0.3s",
+          }} />
+          <span style={{ color: status.dot, fontWeight: 600, transition: "color 0.3s" }}>
+            {status.label}
+          </span>
+        </div>
+
+        {/* Divider */}
+        <div style={{ width: 1, height: 12, background: "rgba(255,255,255,0.08)", flexShrink: 0 }} />
+
+        {/* Mode + flags */}
+        <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 13px 5px 10px" }}>
+          <span style={{ color: "rgba(255,255,255,0.48)", textTransform: "capitalize" }}>{config.mode}</span>
+          {config.webSearch && (
+            <span style={{
+              color: "#60a5fa", fontSize: 9, fontWeight: 700, letterSpacing: "0.05em",
+              padding: "1px 5px", borderRadius: 4, background: "rgba(96,165,250,0.1)",
+            }}>WEB</span>
+          )}
+          {muted ? (
+            <span style={{
+              color: "#f87171", fontSize: 9, fontWeight: 700, letterSpacing: "0.05em",
+              padding: "1px 5px", borderRadius: 4, background: "rgba(248,113,113,0.12)",
+            }}>MIC OFF</span>
+          ) : config.voiceEnabled && (
+            <span style={{
+              color: "#34d399", fontSize: 9, fontWeight: 700, letterSpacing: "0.05em",
+              padding: "1px 5px", borderRadius: 4, background: "rgba(52,211,153,0.1)",
+            }}>MIC ON</span>
+          )}
+        </div>
       </button>
 
       {/* Save / Load — vertically centered on left edge */}
