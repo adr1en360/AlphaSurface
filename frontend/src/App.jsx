@@ -156,6 +156,56 @@ function handleCanvasMessage(editor, message) {
       if (p.shapeIds?.length > 0) editor.select(...p.shapeIds)
       break
 
+    case 'align_shapes': {
+      editor.alignShapes(p.shapeIds, p.alignment)
+      break
+    }
+
+    case 'distribute_shapes': {
+      editor.distributeShapes(p.shapeIds, p.direction)
+      break
+    }
+
+    case 'resize_shape': {
+      editor.updateShape({
+        id: p.shapeId,
+        type: editor.getShape(p.shapeId)?.type,
+        props: { w: p.w, h: p.h },
+      })
+      break
+    }
+
+    case 'create_frame': {
+      editor.createShape({
+        id: createShapeId(),
+        type: 'frame',
+        x: p.x, y: p.y,
+        props: { w: p.w, h: p.h, name: p.label },
+      })
+      break
+    }
+
+    case 'group_shapes': {
+      editor.groupShapes(p.shapeIds)
+      break
+    }
+
+    case 'label_shape': {
+      const shape = editor.getShape(p.shapeId)
+      if (shape) {
+        editor.updateShape({
+          id: p.shapeId,
+          type: shape.type,
+          meta: {
+            ...shape.meta,
+            semanticRole: p.semanticRole ?? 'unknown',
+            addedBy: p.addedBy ?? 'live_agent',
+          },
+        })
+      }
+      break
+    }
+
     case "audio_response": {
       if (!p.data || !_playback.enabled) break
       const raw = atob(p.data)
@@ -334,23 +384,73 @@ function AlphaSurfaceInner({ config }) {
 
     const sendSnapshot = () => {
       if (ws.readyState !== WebSocket.OPEN) return
-      const shapeIds = [...editor.getCurrentPageShapeIds()]
-      if (shapeIds.length === 0) return
-      const shapes = shapeIds.map(id => {
-        const s = editor.getShape(id)
-        const b = editor.getShapePageBounds(id)
-        return {
-          id: id.toString(),
-          type: s?.type ?? "unknown",
-          x: Math.round(b?.x ?? 0),
-          y: Math.round(b?.y ?? 0),
-          w: Math.round(b?.w ?? 100),
-          h: Math.round(b?.h ?? 60),
+      
+      const sortedIds = editor.getSortedChildIdsForParent(editor.getCurrentPageId())
+      const zIndexMap = {}
+      sortedIds.forEach((id, i) => { zIndexMap[id] = i })
+
+      const viewport = editor.getViewportPageBounds()
+      const selectedIds = new Set(editor.getSelectedShapeIds())
+
+      const shapes = editor.getCurrentPageShapes().map(shape => {
+        const bounds = editor.getShapePageBounds(shape.id)
+        const inViewport = viewport && bounds
+          ? !(bounds.x + bounds.w < viewport.x ||
+              bounds.x > viewport.x + viewport.w ||
+              bounds.y + bounds.h < viewport.y ||
+              bounds.y > viewport.y + viewport.h)
+          : false
+
+        const enriched = {
+          id:       shape.id,
+          type:     shape.type,
+          x:        bounds?.x  ?? shape.x ?? 0,
+          y:        bounds?.y  ?? shape.y ?? 0,
+          w:        bounds?.w  ?? shape.props?.w ?? 100,
+          h:        bounds?.h  ?? shape.props?.h ?? 60,
+          text: (
+            shape.props?.text ??
+            (typeof shape.props?.richText === 'string' ? shape.props.richText : '') ??
+            ''
+          ).trim(),
+          color:    shape.props?.color    ?? 'black',
+          rotation: shape.rotation        ?? 0,
+          parentId: shape.parentId === editor.getCurrentPageId()
+                      ? null
+                      : shape.parentId,
+          zIndex:   zIndexMap[shape.id]   ?? 0,
+          inViewport,
+          isLocked: shape.isLocked        ?? false,
+          meta: {
+            semanticRole: shape.meta?.semanticRole ?? 'unknown',
+            addedBy:      shape.meta?.addedBy      ?? 'user',
+            confidence:   shape.meta?.confidence   ?? 1.0,
+          },
         }
+
+        if (shape.type === 'arrow') {
+          enriched.arrowBindings = {
+            startShapeId: shape.props?.start?.boundShapeId ?? null,
+            endShapeId:   shape.props?.end?.boundShapeId   ?? null,
+          }
+        }
+        return enriched
       })
+
       ws.send(JSON.stringify({
         type: "canvas_snapshot",
-        payload: { shapes, shape_count: shapes.length }
+        payload: { 
+          shapes, 
+          shape_count: shapes.length,
+          viewport: {
+            x:    viewport?.x ?? 0,
+            y:    viewport?.y ?? 0,
+            w:    viewport?.w ?? 1200,
+            h:    viewport?.h ?? 800,
+            zoom: editor.getZoomLevel(),
+          },
+          selectedShapeIds: [...selectedIds],
+        }
       }))
     }
 

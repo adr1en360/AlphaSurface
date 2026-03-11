@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from agent import AlphaSurfaceAgent
+from live_session import AlphaSurfaceAgent
 from event_bus import get_event_bus
 import tools as canvas_tools
 from sub_agents.persona_agent import get_persona_agent
@@ -45,6 +45,9 @@ CANVAS_PASSTHROUGH_TYPES = {
     "delete_shapes", "update_shape", "move_shape",
     "clear_canvas", "zoom_to_fit", "focus_shape",
     "select_shapes",
+    "align_shapes", "distribute_shapes", "resize_shape",
+    "create_frame", "group_shapes", "label_shape",
+    "add_image",
 }
 
 
@@ -201,7 +204,13 @@ async def websocket_endpoint(websocket: WebSocket):
             if msg_type == "canvas_snapshot":
                 shapes = payload.get("shapes", [])
                 shape_count = payload.get("shape_count", 0)
-                changed = canvas_tools.update_canvas_state(shapes, shape_count)
+                viewport = payload.get("viewport", None)
+                selected = payload.get("selectedShapeIds", None)
+                changed = canvas_tools.update_canvas_state(
+                    shapes, shape_count,
+                    viewport=viewport,
+                    selected_shape_ids=selected,
+                )
                 if changed:
                     bus.signal_canvas_change()  # ← event-driven, not timer
 
