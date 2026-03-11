@@ -24,81 +24,65 @@ AlphaSurface is a real-time voice + vision canvas where an AI co-thinker watches
 
 ---
 
-## Architecture
+## Quickstart
 
-```
-Browser (React + tldraw)
-  ↕  WebSocket (audio PCM + canvas snapshots + shape commands)
-FastAPI  ─── main.py   (WS hub, broadcast, CORS)
-  │
-  └── agent.py  (ADK LiveRequestQueue ↔ Gemini bidi stream)
-        │
-        └── tools.py  (canvas action queue → broadcast → browser)
-```
+### 1. Prerequisites
 
----
+- Python ≥ 3.12
+- Node.js ≥ 18
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+- A [Gemini API key](https://aistudio.google.com/apikey)
 
-## Prerequisites
-
-| Tool | Version |
-|------|---------|
-| Python | ≥ 3.12 |
-| Node.js | ≥ 18 |
-| [uv](https://docs.astral.sh/uv/) | latest (recommended) or pip |
-| A **Gemini API key** | [Get one here](https://aistudio.google.com/apikey) |
-
----
-
-## Installation
-
-### 1. Clone the repo
+### 2. Setup
 
 ```bash
 git clone https://github.com/<your-username>/AlphaSurface.git
 cd AlphaSurface
-```
 
-### 2. Backend
-
-```bash
+# Set up backend
 cd backend
-uv sync            # creates .venv and installs deps from pyproject.toml
-```
+uv sync
+echo "GEMINI_API_KEY=your-key-here" > .env
+cd ..
 
-Create a `.env` file in `backend/`:
-
-```env
-GEMINI_API_KEY=your-key-here
-```
-
-### 3. Frontend
-
-```bash
+# Set up frontend
 cd frontend
 npm install
+cd ..
 ```
 
----
-
-## Quickstart
+### 3. Run the App
 
 Open **two terminals** from the project root:
 
 **Terminal 1 — Backend**
-
 ```bash
 cd backend
 uv run uvicorn main:app --reload --port 8000
 ```
 
 **Terminal 2 — Frontend**
-
 ```bash
 cd frontend
 npm run dev
 ```
 
 Open [http://localhost:5173](http://localhost:5173), pick a mode, toggle voice on, and click **Launch**.
+
+---
+
+## Usage Examples
+
+Once connected, try these interactions based on your chosen mode:
+
+**In Think Mode (solo brainstorming)**
+- Draw a simple architecture diagram and ask: *"What are the weak points here?"*
+- Write down a product idea and say: *"Give me three reasons this will fail."*
+- Drop a sticky note and say: *"Expand on this point."*
+
+**In Explain Mode (presenting/teaching)**
+- Draw a concept (e.g., a cell structure) and say: *"I'm going to explain mitochondria."* (The AI listens and might quietly drop a reference bookmark or definition.)
+- Say: *"Can you place a YouTube video about photosynthesis?"* (The AI finds and embeds a relevant video on the canvas.)
 
 ---
 
@@ -114,9 +98,21 @@ These can also be set from the launch screen in the browser.
 
 ---
 
+## Architecture
+
+```text
+Browser (React + tldraw)
+  ↕  WebSocket (audio PCM + canvas snapshots + shape commands)
+FastAPI  ─── main.py   (WS hub, broadcast, CORS)
+  │
+  └── agent.py  (ADK LiveRequestQueue ↔ Gemini bidi stream)
+        │
+        └── tools.py  (canvas action queue → broadcast → browser)
+```
+
 ## Project Structure
 
-```
+```text
 backend/
   main.py          # FastAPI app, WebSocket hub, broadcast
   agent.py         # ADK agent, Gemini bidi streaming, system prompts
@@ -152,7 +148,6 @@ npm run lint
 ```bash
 curl http://localhost:8000/health
 ```
-
 Returns agent status, connected clients, and current mode.
 
 ---

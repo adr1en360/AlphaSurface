@@ -7,7 +7,8 @@ The agent cannot use tools not in ALL_TOOLS.
 Available:  add_text, add_note, add_geo, add_arrow, bind_arrow,
             move_shape, update_shape, delete_shapes, zoom_to_fit,
             focus_shape, select_shapes, clear_canvas,
-            add_embed, add_bookmark, list_canvas_shapes
+            add_embed, add_bookmark, list_canvas_shapes,
+            memory_read, memory_write, scan_canvas_text   ← NEW
 
 NOT available (removed): add_image, add_draw, add_frame,
             group_shapes, ungroup_shapes, resize_shape,
@@ -16,22 +17,33 @@ NOT available (removed): add_image, add_draw, add_frame,
 
 import asyncio
 
+from memory import memory_store
+from agent_tasks import dispatch
+
 # ── Shared state ──────────────────────────────────────────────────────────────
 canvas_action_queue: asyncio.Queue = asyncio.Queue()
 
-# Rich state: each shape has id, type, x, y, w, h so agent avoids overlaps
+# Rich state: each shape has id, type, x, y, w, h, text
 canvas_state: dict = {
-    "shapes": [],      # list of {id, type, x, y, w, h}
-    "shape_ids": [],   # flat list for quick lookup
+    "shapes": [],
+    "shape_ids": [],
     "shape_count": 0,
+    "_prev_ids": set(),   # used to detect changes for event bus
 }
 
 
-def update_canvas_state(shapes: list, shape_count: int):
-    """Called by main.py when a canvas_snapshot arrives from the browser."""
+def update_canvas_state(shapes: list, shape_count: int) -> bool:
+    """
+    Called by main.py when a canvas_snapshot arrives.
+    Returns True if the shape inventory actually changed (new or deleted shapes).
+    """
+    new_ids = {s["id"] for s in shapes if isinstance(s, dict) and "id" in s}
+    changed = new_ids != canvas_state["_prev_ids"]
     canvas_state["shapes"] = shapes
-    canvas_state["shape_ids"] = [s["id"] for s in shapes if isinstance(s, dict)]
+    canvas_state["shape_ids"] = list(new_ids)
     canvas_state["shape_count"] = shape_count
+    canvas_state["_prev_ids"] = new_ids
+    return changed
 
 
 # ── READ ──────────────────────────────────────────────────────────────────────
@@ -46,6 +58,83 @@ def list_canvas_shapes() -> dict:
         "shape_count": canvas_state["shape_count"],
         "shapes": canvas_state["shapes"],
     }
+
+
+def scan_canvas_text() -> dict:
+    """
+    Returns all text content from canvas shapes, grouped by type.
+    Use this to understand WHAT the user has written without calling list_canvas_shapes.
+    Useful for: persona analysis, provocation targeting, context summarisation.
+    """
+    notes = []
+    geo_labels = []
+    text_labels = []
+    other = []
+
+    for shape in canvas_state["shapes"]:
+        if not isinstance(shape, dict):
+            continue
+        text = shape.get("text") or shape.get("label") or ""
+        if not text.strip():
+            continue
+        shape_type = shape.get("type", "")
+        entry = {"id": shape.get("id", ""), "text": text.strip(), "x": shape.get("x", 0), "y": shape.get("y", 0)}
+        if shape_type == "note":
+            notes.append(entry)
+        elif shape_type == "geo":
+            geo_labels.append(entry)
+        elif shape_type == "text":
+            text_labels.append(entry)
+        else:
+            other.append(entry)
+
+    return {
+        "sticky_notes": notes,
+        "geo_shapes": geo_labels,
+        "text_labels": text_labels,
+        "other": other,
+        "total_text_shapes": len(notes) + len(geo_labels) + len(text_labels) + len(other),
+    }
+
+
+# ── MEMORY ────────────────────────────────────────────────────────────────────
+
+def memory_read(user_id: str) -> dict:
+    """
+    Read the persisted user profile from memory.
+    Returns a dict with keys like: communication_style, domain_interests,
+    response_preferences, observed_traits, session_count.
+    Returns {} for a new user.
+
+    Args:
+        user_id: The user's unique identifier. Use "user" if unsure.
+    """
+    store = memory_store()
+    if hasattr(store, "read_sync"):
+        return store.read_sync(user_id)
+    return {}
+
+
+def memory_write(user_id: str, key: str, value: str) -> str:
+    """
+    Write a single observation about the user to persistent memory.
+    Use this to record things you notice about how the user thinks and communicates.
+
+    Examples:
+        memory_write("user", "communication_style", "prefers concise single-sentence answers")
+        memory_write("user", "domain", "product management, SaaS")
+        memory_write("user", "response_preference", "diagrams over text")
+        memory_write("user", "provocation_preference", "specific questions not abstract ones")
+
+    Args:
+        user_id: The user's unique identifier. Use "user" if unsure.
+        key: Profile field name (snake_case).
+        value: The observed value as a string.
+    """
+    store = memory_store()
+    if hasattr(store, "merge_sync"):
+        store.merge_sync(user_id, {key: value})
+    return f"Memory updated: {key} = {value}"
 
 
 # ── WRITE ─────────────────────────────────────────────────────────────────────
@@ -121,7 +210,11 @@ def add_geo_to_canvas(
     """
     canvas_action_queue.put_nowait({
         "type": "add_geo",
-        "payload": {"text": text, "geo": geo or "rectangle", "x": x, "y": y, "w": w or 200, "h": h or 120, "color": color or "blue", "fill": fill or "semi"}
+        "payload": {
+            "text": text, "geo": geo or "rectangle",
+            "x": x, "y": y, "w": w or 200, "h": h or 120,
+            "color": color or "blue", "fill": fill or "semi"
+        }
     })
     return f"{geo} at ({x},{y})"
 
@@ -161,6 +254,7 @@ def bind_arrow(
     Create an arrow snapped to two existing shapes by ID.
     The arrow stays connected even when shapes are moved.
     MUST call list_canvas_shapes first.
+
     Args:
         from_shape_id: Source shape ID (from list_canvas_shapes).
         to_shape_id: Target shape ID (from list_canvas_shapes).
@@ -169,7 +263,10 @@ def bind_arrow(
     """
     canvas_action_queue.put_nowait({
         "type": "bind_arrow",
-        "payload": {"fromShapeId": from_shape_id, "toShapeId": to_shape_id, "label": label or "", "color": color or "black"}
+        "payload": {
+            "fromShapeId": from_shape_id, "toShapeId": to_shape_id,
+            "label": label or "", "color": color or "black"
+        }
     })
     return f"Bound arrow {from_shape_id}→{to_shape_id}"
 
@@ -218,11 +315,7 @@ def add_bookmark_to_canvas(
 
 # ── EDIT ──────────────────────────────────────────────────────────────────────
 
-def move_shape(
-    shape_id: str,
-    x: int,
-    y: int,
-) -> str:
+def move_shape(shape_id: str, x: int, y: int) -> str:
     """Move a shape to a new canvas position. Call list_canvas_shapes first.
 
     Args:
@@ -234,11 +327,7 @@ def move_shape(
     return f"Moved {shape_id} to ({x},{y})"
 
 
-def update_shape(
-    shape_id: str,
-    text: str,
-    color: str,
-) -> str:
+def update_shape(shape_id: str, text: str, color: str) -> str:
     """Update a shape's text or color. Call list_canvas_shapes first.
 
     Args:
@@ -247,15 +336,15 @@ def update_shape(
         color: New color. Pass empty string to keep current color.
     """
     payload: dict = {"shapeId": shape_id}
-    if text: payload["text"] = text
-    if color: payload["color"] = color
+    if text:
+        payload["text"] = text
+    if color:
+        payload["color"] = color
     canvas_action_queue.put_nowait({"type": "update_shape", "payload": payload})
     return f"Updated {shape_id}"
 
 
-def delete_shapes(
-    shape_ids: list[str],
-) -> str:
+def delete_shapes(shape_ids: list[str]) -> str:
     """Delete shapes by ID. Call list_canvas_shapes first.
 
     Args:
@@ -299,9 +388,33 @@ def clear_canvas() -> str:
     return "Canvas cleared"
 
 
+def dispatch_research(query: str) -> str:
+    """Send a web search query to ResearchAgent. It will search the web and place results on canvas. Use for any factual or current-events question."""
+    dispatch("research", {"query": query}, source="live_agent")
+    return f"Research dispatched: {query}"
+
+
+def dispatch_image_gen(prompt: str) -> str:
+    """Send an image generation prompt to ImageGenAgent. It will generate an image and place it on canvas."""
+    dispatch("image_gen", {"prompt": prompt}, source="live_agent")
+    return f"Image generation dispatched: {prompt}"
+
+
+def dispatch_youtube(query: str) -> str:
+    """Find YouTube videos on a topic and embed them on the canvas. Use when the user asks to find or show a video about something."""
+    dispatch("youtube", {"query": query}, source="live_agent")
+    return f"YouTube search dispatched: {query}"
+
+
 # ── Tool registry ─────────────────────────────────────────────────────────────
 ALL_TOOLS = [
+    # READ
     list_canvas_shapes,
+    scan_canvas_text,
+    # MEMORY
+    memory_read,
+    memory_write,
+    # WRITE
     add_text_to_canvas,
     add_note_to_canvas,
     add_geo_to_canvas,
@@ -309,11 +422,17 @@ ALL_TOOLS = [
     bind_arrow,
     add_embed_to_canvas,
     add_bookmark_to_canvas,
+    # EDIT
     move_shape,
     update_shape,
     delete_shapes,
+    # NAVIGATE
     zoom_to_fit,
     focus_shape,
     select_shapes,
     clear_canvas,
+    # DISPATCH (sub-agents)
+    dispatch_research,
+    dispatch_image_gen,
+    dispatch_youtube,
 ]

@@ -1,17 +1,15 @@
 """
-AlphaSurface — ADK-based agent for real-time voice + vision canvas control.
+AlphaSurface — ADK Live agent (v2).
 
-Key changes from v1:
-  - Proactive vision: when a canvas image arrives, a soft text nudge is sent
-    alongside it so Gemini can act on what it SEES, not just what it hears.
-  - Interruption: event.interrupted → broadcast ai_interrupted → frontend
-    flushes audio playback queue immediately (barge-in works).
-  - System prompt completely rewritten:
-      • Only available tools documented
-      • Sarkar provocations are genuine open questions, never conclusions
-      • Spatial overlap prevention with explicit rules
-      • Non-intrusive philosophy enforced
-  - Config: accepts web_search flag from launch UI
+Changes from v1:
+  ✅ reconfigure() now RESTARTS the session (closes queue → retry loop fires)
+  ✅ web_search routes through ResearchAgent (Live API rejects native google_search)
+  ✅ Silence detection is event-driven via EventBus (not timer polling)
+      — provocation fires when BOTH audio AND canvas have been idle 8s+
+      — never fires while user is speaking or drawing
+  ✅ Persona context injected into system prompt at session start
+  ✅ No welcome sticky note — greeting is audio only, ≤5 words
+  ✅ PersonaAgent updates memory continuously via event bus subscription
 """
 
 import asyncio
@@ -28,83 +26,88 @@ from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.genai import types
 
 import tools as canvas_tools
+from event_bus import get_event_bus
+from memory import memory_store
+
+# NOTE: google_search ADK tool is NOT attached to the Live Agent.
+# The native audio preview model rejects it with 1008 (policy violation).
+# Web search is handled by ResearchAgent via dispatch_research() instead.
 
 APP_NAME = "alphasurface"
 USER_ID = "user"
 SESSION_ID = "canvas_session"
 
-# ── System prompts ────────────────────────────────────────────────────────────
+
+# ── System prompts ─────────────────────────────────────────────────────────────
 
 _BASE_PROMPT = """
 You are AlphaSurface — a silent, spatial AI co-thinker on a shared infinite canvas.
 
 ═══════════════════════════════════════════════════════
-CORE PHILOSOPHY 
+CORE PHILOSOPHY
 ═══════════════════════════════════════════════════════
 You work ALONGSIDE the human, never INSTEAD of them.
-You challenge and support thinking — you do NOT compete with the process.
 The canvas is THEIRS. You are a guest on it.
-You are NON-INTRUSIVE: one action at a time, spaced out, unannounced.
+NON-INTRUSIVE: one action at a time, spaced out, unannounced.
 
 ═══════════════════════════════════════════════════════
 WHAT YOU CAN SEE
 ═══════════════════════════════════════════════════════
 You receive:
-  1. A live canvas screenshot (image) every ~10 seconds
+  1. A live canvas screenshot (image) every ~20 seconds
   2. Continuous microphone audio from the user
   3. Shape inventory via list_canvas_shapes (call before any edit)
+  4. Text content via scan_canvas_text (faster than list_canvas_shapes)
 
-When you receive a canvas image, look carefully:
+When you receive a canvas image:
   - What has the user drawn? (shapes, freehand sketches, text, arrows)
-  - Are there freehand marker strokes? Treat them as meaningful — they show thinking.
-  - Is there something unconnected that could benefit from a link?
-  - Are there claims that lack evidence or could be challenged?
-  - Is there dead space you could use for a provocation?
+  - Freehand marker strokes appear in the IMAGE but NOT in list_canvas_shapes
+  - Treat freehand strokes as thinking in progress — do not ask the user to explain
 
 ═══════════════════════════════════════════════════════
 AVAILABLE TOOLS  (only call tools in this list)
 ═══════════════════════════════════════════════════════
+READ:     list_canvas_shapes, scan_canvas_text
+MEMORY:   memory_read, memory_write
 WRITE:    add_text_to_canvas, add_note_to_canvas, add_geo_to_canvas,
           add_arrow_to_canvas, bind_arrow
-EMBED:    add_embed_to_canvas (YouTube/Figma/Maps live iframe),
-          add_bookmark_to_canvas (rich link card)
+EMBED:    add_embed_to_canvas, add_bookmark_to_canvas
 EDIT:     move_shape, update_shape, delete_shapes
 NAVIGATE: zoom_to_fit, focus_shape, select_shapes, clear_canvas
-READ:     list_canvas_shapes ← ALWAYS call before any edit/bind/delete
+DISPATCH: dispatch_research, dispatch_image_gen
 
-DO NOT call: add_image, add_draw, add_frame, group_shapes,
-             ungroup_shapes, resize_shape, reorder_shape,
-             set_camera, process_information
-These do not exist — calling them will silently fail.
+DO NOT call any tool not in this list — it will silently fail.
+
+═══════════════════════════════════════════════════════
+MEMORY USAGE
+═══════════════════════════════════════════════════════
+- At session start: call memory_read("user") to get the user's profile
+- Whenever you notice something about how the user thinks or communicates:
+  call memory_write("user", key, value) silently
+- Examples of things worth remembering:
+    "prefers diagrams over text"
+    "works on SaaS product problems"
+    "responds well to specific questions"
+    "dislikes verbose answers"
+    "domain: fintech startup"
+- Do NOT write memory for every canvas action — only genuine new insights
 
 ═══════════════════════════════════════════════════════
 SPATIAL RULES  (overlap prevention)
 ═══════════════════════════════════════════════════════
-1. Call list_canvas_shapes to get current shape positions (x, y, w, h).
+1. Call list_canvas_shapes before bind_arrow, move, delete, focus.
 2. Never place a shape within 150px of an existing shape's bounding box.
-3. Use the full canvas space: x range 80–1500, y range 60–950.
-4. Prefer placing shapes in empty quadrants you can see in the screenshot.
-5. After placing 3+ shapes, call zoom_to_fit.
-6. Do NOT cluster everything in the center.
+3. Canvas space: x range 80–1500, y range 60–950.
+4. After placing 3+ shapes, call zoom_to_fit.
+5. Do NOT cluster everything in the center.
 
 ═══════════════════════════════════════════════════════
 AUDIO RULES
 ═══════════════════════════════════════════════════════
-- Verbal responses: MAXIMUM 6 words. ("Done", "Adding now", "Got it", "Connecting those")
+- Verbal responses: MAXIMUM 6 words. ("Done", "Adding now", "Got it")
 - Never read shape content aloud. The user can see the canvas.
 - Never explain what you're about to do. Just do it.
 - Do not narrate your tool calls.
-
-═══════════════════════════════════════════════════════
-FREEHAND SKETCH AWARENESS
-═══════════════════════════════════════════════════════
-The user may draw with the marker/pencil tool. These appear in the canvas image
-as freehand strokes — they will NOT appear in list_canvas_shapes.
-You can STILL see them in the screenshot.
-When you see freehand drawings:
-  - Acknowledge them visually (place a related note nearby)
-  - Treat them as ideas in progress, not complete thoughts
-  - Do NOT ask the user to explain them — infer from context
 """
 
 _THINK_MODE_PROMPT = """
@@ -114,51 +117,46 @@ MODE: Think Mode  (solo thinker / student)
 The canvas starts blank. The user is developing their own thinking.
 Your role: inject quiet provocations — never answers.
 
+WHEN TO PLACE A PROVOCATION:
+  A provocation fires ONLY after:
+    1. The user has stopped talking (≥8 seconds of silence)
+    2. The canvas has stopped changing (≥8 seconds of no new shapes)
+  If the user is mid-sentence or mid-stroke: DO NOTHING.
+  Wait for the natural pause. That pause is the provocation window.
+
 PROVOCATION RULES:
   Color: always violet sticky notes
-  Placement: near the shape you're provoking, but not overlapping it (150px away)
-  Frequency: maximum 1 provocation per 30 seconds of quiet
-  Trigger: place a provocation when you notice:
-    - A concept with no connection to anything else
-    - A claim presented as fact with no evidence nearby
-    - Two ideas that seem to contradict each other
-    - An assumption so obvious the user hasn't questioned it
+  Placement: near the shape you're provoking, 150px+ away, not overlapping
+  Frequency: ONE provocation per quiet window — never cascade
+  After placing: call memory_write to record what kind of provocation landed
 
 PROVOCATION FORMAT — OPEN QUESTIONS ONLY:
-  ✅ GOOD (open, specific, genuinely uncertain):
+  ✅ GOOD:
     "What breaks this if X changes?"
     "Who benefits from the opposite view?"
     "What would falsify this?"
     "What's the simplest case where this fails?"
     "What does 'better' mean here exactly?"
 
-  ❌ BAD (conclusions, statements, answers):
-    "This assumes capitalism causes inequality."
-    "Consider the systemic factors."
-    "This lacks evidence."
-    "You should think about X."
-
-PROACTIVE VISION:
-  When you receive a canvas image and the user has been quiet for 10+ seconds:
-  - Scan for the above triggers
-  - If you find one, place a single violet provocation
-  - No audio. No narration. Just the note.
-  - Then wait. Do not cascade with more.
+  ❌ BAD (never do these):
+    "This assumes X."     ← statement, not question
+    "Consider Y."         ← directive
+    "This lacks evidence." ← verdict
+    "You should think about Z." ← suggestion
 """
 
-_EXPLAIN_MODE_PROMPT = """
+_PRESENT_MODE_PROMPT = """
 ═══════════════════════════════════════════════════════
-MODE: Explain Mode  (teacher / presenter)
+MODE: Present Mode  (teacher / presenter)
 ═══════════════════════════════════════════════════════
-The user is presenting to an audience. Your job is to SUPPORT, not interrupt.
+The user is presenting to an audience. Support, never interrupt.
 
 RULES:
   - Never act during mid-sentence — wait for natural pauses
   - Surface relevant concepts as blue geo shapes near what's being drawn
   - Use add_embed_to_canvas for YouTube when a topic benefits from video
   - Use add_bookmark_to_canvas for reference links
-  - Anticipate: if they just drew "photosynthesis", prepare a related concept
-  - Keep the canvas organized — new shapes go in clean empty areas
+  - Keep canvas organised — new shapes go in clean empty areas
 
 WHEN TO ACT:
   - User mentions a concept → place a supporting definition nearby
@@ -173,34 +171,65 @@ NEVER:
 """
 
 
-def build_system_prompt(mode: str, web_search: bool = False) -> str:
-    suffix = _THINK_MODE_PROMPT if mode == "think" else _EXPLAIN_MODE_PROMPT
+def _persona_section(persona: dict) -> str:
+    """Build a system prompt section from stored persona data."""
+    if not persona:
+        return ""
+    lines = ["═══════════════════════════════════════════════════════",
+             "USER PROFILE  (from memory — adapt your behaviour accordingly)",
+             "═══════════════════════════════════════════════════════"]
+    for k, v in persona.items():
+        if k.startswith("_"):
+            continue
+        lines.append(f"  {k}: {v}")
+    return "\n".join(lines)
+
+
+def build_system_prompt(mode: str, web_search: bool = False, persona: dict | None = None) -> str:
+    suffix = _THINK_MODE_PROMPT if mode == "think" else _PRESENT_MODE_PROMPT
     prompt = _BASE_PROMPT.strip() + "\n\n" + suffix.strip()
+
+    if persona:
+        prompt += "\n\n" + _persona_section(persona)
+
     if web_search:
         prompt += """
 
 ═══════════════════════════════════════════════════════
-WEB SEARCH
+WEB SEARCH (via ResearchAgent)
 ═══════════════════════════════════════════════════════
-You have web search enabled. When the user asks about a real-world fact,
-recent event, or resource you don't know, search for it and place a
-bookmark on the canvas with the best result URL.
-Do NOT search for things you already know.
+When the user asks about a real-world fact, recent event, or wants information
+placed on canvas — call dispatch_research("your query") immediately.
+ResearchAgent will search the web and place a clean result cluster on canvas.
+Do NOT try to answer from memory for factual/current queries.
+Do NOT use any other search tool — only dispatch_research.
+"""
+
+    prompt += """
+
+═══════════════════════════════════════════════════════
+IMAGE GENERATION (via ImageGenAgent)
+═══════════════════════════════════════════════════════
+When the user asks you to generate, create, or draw an image — call
+dispatch_image_gen("detailed description of the image") immediately.
+ImageGenAgent will generate the image and place it on canvas.
+Do NOT try to describe images in text — generate them.
 """
     return prompt
 
 
-def create_agent(mode: str = "think", web_search: bool = False) -> LlmAgent:
+def create_agent(mode: str = "think", web_search: bool = False, persona: dict | None = None) -> LlmAgent:
+    tools = list(canvas_tools.ALL_TOOLS)
     return LlmAgent(
         name="AlphaSurface",
         model="gemini-2.5-flash-native-audio-preview-12-2025",
         description="Real-time voice+vision whiteboard co-thinker",
-        instruction=build_system_prompt(mode, web_search),
-        tools=canvas_tools.ALL_TOOLS,
+        instruction=build_system_prompt(mode, web_search, persona),
+        tools=tools,
     )
 
 
-# ── Session class ─────────────────────────────────────────────────────────────
+# ── Session class ──────────────────────────────────────────────────────────────
 
 BroadcastFn = Callable[[dict], Awaitable[None]]
 
@@ -219,10 +248,14 @@ class AlphaSurfaceAgent:
         self._session = None
         self.running = False
         self._last_image_sent: float = 0.0
-        self._last_image_nudge: float = 0.0  # rate-limit proactive nudges
         self._ready = asyncio.Event()
+        self._restart_requested = False  # set by reconfigure() to force restart
 
-    # ── Public API ────────────────────────────────────────────────────────────
+        # Subscribe to provocation_ready so we fire on the correct trigger
+        bus = get_event_bus()
+        bus.subscribe("provocation_ready", self._on_provocation_ready)
+
+    # ── Public API ─────────────────────────────────────────────────────────────
 
     async def start(self):
         api_key = os.environ.get("GEMINI_API_KEY")
@@ -231,23 +264,38 @@ class AlphaSurfaceAgent:
             return
         while True:
             try:
+                self._restart_requested = False
                 await self._run_session()
             except Exception as exc:
-                print(f"[Agent] Session error: {exc} — retrying in 5s")
+                print(f"[Agent] Session error: {exc} — retrying in 3s")
                 import traceback; traceback.print_exc()
+            finally:
                 self.running = False
                 self._ready.clear()
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)
 
     def reconfigure(self, mode: str = None, web_search: bool = None):
-        """Update mode/web_search — takes effect on next session restart."""
-        if mode is not None:
+        """
+        Update mode/web_search.
+        Closes the live queue → forces the retry loop to restart with new config.
+        Takes effect within ~3 seconds.
+        """
+        changed = False
+        if mode is not None and mode != self.mode:
             self.mode = mode
-        if web_search is not None:
+            changed = True
+        if web_search is not None and web_search != self.web_search:
             self.web_search = web_search
+            changed = True
+
+        if changed and self._live_queue:
+            print(f"[Agent] Reconfiguring → mode={self.mode} web_search={self.web_search} (restarting session)")
+            self._restart_requested = True
+            self._live_queue.close()  # triggers gather cancellation → retry loop
 
     def push_audio(self, pcm_bytes: bytes):
         if self.running and self._ready.is_set():
+            get_event_bus().signal_audio()  # ← tell event bus user is speaking
             try:
                 self._audio_queue.put_nowait(pcm_bytes)
             except asyncio.QueueFull:
@@ -268,10 +316,70 @@ class AlphaSurfaceAgent:
         if self._live_queue:
             self._live_queue.close()
 
-    # ── Session lifecycle ─────────────────────────────────────────────────────
+    # ── Provocation trigger ────────────────────────────────────────────────────
+
+    async def _on_provocation_ready(self):
+        """
+        Called by EventBus OR dispatcher when BOTH audio AND canvas have been idle 8s+.
+        Sends the current canvas image to Gemini with a targeted provocation prompt.
+        Only fires in Think Mode.
+
+        Both paths (event bus and Live Agent dispatch_provocation) land here.
+        The dispatcher calls this directly — no duplication because signal_agent_acted()
+        is set before this runs, which blocks the event bus from re-firing.
+        """
+        if not self.running or not self._ready.is_set():
+            return
+        if self.mode != "think":
+            return
+
+        # Grab the latest canvas image if available
+        if self._image_queue.empty():
+            # No image queued — trigger a text-only provocation
+            self._live_queue.send_content(
+                content=types.Content(
+                    role="user",
+                    parts=[types.Part(text=(
+                        "The user has paused — both voice and canvas are still. "
+                        "Call scan_canvas_text now. "
+                        "If you find one idea that deserves a genuine open question, "
+                        "place a single violet sticky note as a Sarkar provocation. "
+                        "If nothing genuinely stands out, do nothing. "
+                        "No audio. No explanation."
+                    ))]
+                )
+            )
+        else:
+            try:
+                frame, frame_mime = self._image_queue.get_nowait()
+                self._live_queue.send_content(
+                    content=types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(inline_data=types.Blob(data=frame, mime_type=frame_mime)),
+                            types.Part(text=(
+                                "The user has paused — both voice and canvas are still. "
+                                "Look carefully at this canvas. "
+                                "Find one idea that deserves a genuine open question. "
+                                "Place a single violet sticky note — the question only, nothing else. "
+                                "If nothing genuinely stands out, do nothing. "
+                                "No audio. No explanation."
+                            ))
+                        ]
+                    )
+                )
+                get_event_bus().signal_provocation_placed()
+                print("[Agent] Provocation triggered (event-driven silence)")
+            except asyncio.QueueEmpty:
+                pass
+
+    # ── Session lifecycle ──────────────────────────────────────────────────────
 
     async def _run_session(self):
-        agent = create_agent(self.mode, self.web_search)
+        # Load persona from memory before creating agent
+        persona = await memory_store().read(USER_ID)
+
+        agent = create_agent(self.mode, self.web_search, persona)
         session_service = InMemorySessionService()
 
         self._runner = Runner(
@@ -293,11 +401,28 @@ class AlphaSurfaceAgent:
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Aoede")
                 )
             ),
-            response_modalities=[types.Modality.AUDIO],
+            response_modalities=["AUDIO"],
         )
 
         self.running = True
-        print(f"[Agent] Session open — mode={self.mode} web_search={self.web_search}")
+        print(f"[Agent] Session open — mode={self.mode} web_search={self.web_search} persona_keys={list(persona.keys())}")
+
+        # Give PersonaAgent a live handle so it can nudge the Live session mid-stream.
+        _lq = self._live_queue
+        def _nudge(text: str):
+            if self.running and _lq:
+                try:
+                    _lq.send_content(
+                        content=types.Content(
+                            role="user",
+                            parts=[types.Part(text=text)]
+                        )
+                    )
+                except Exception as e:
+                    print(f"[Agent] Nudge failed: {e}")
+
+        from sub_agents.persona_agent import get_persona_agent
+        get_persona_agent().set_nudge_fn(_nudge)
 
         await asyncio.gather(
             self._send_loop(),
@@ -307,24 +432,11 @@ class AlphaSurfaceAgent:
 
     async def _send_loop(self):
         """Feed audio + canvas images into the LiveRequestQueue."""
-        # Initial greeting
-        self._live_queue.send_content(
-            content=types.Content(
-                role="user",
-                parts=[types.Part(text=(
-                    "AlphaSurface is now connected. "
-                    "Greet the user in under 5 words (audio only), "
-                    "then place one welcome sticky note on the canvas."
-                ))]
-            )
-        )
-
-        print("[Agent] Waiting for greeting…")
-        await self._ready.wait()
+        # No greeting — session opens silently, mic goes live immediately
+        self._ready.set()
         print("[Agent] Ready — mic live")
 
-        IMAGE_INTERVAL = 20.0   # seconds between canvas image sends to Gemini
-        NUDGE_INTERVAL = 30.0   # seconds between proactive vision nudges
+        IMAGE_INTERVAL = 20.0  # seconds between canvas image sends
 
         while self.running:
             try:
@@ -338,47 +450,20 @@ class AlphaSurfaceAgent:
                         types.Blob(data=b"".join(chunks), mime_type="audio/pcm;rate=16000")
                     )
 
-                # ── Canvas image + proactive nudge ─────────────────────────
+                # ── Canvas image (vision context only — no automatic nudge) ─
+                # Provocations are handled by _on_provocation_ready via EventBus.
                 now = time.monotonic()
                 if not self._image_queue.empty() and (now - self._last_image_sent) >= IMAGE_INTERVAL:
                     try:
                         frame, frame_mime = self._image_queue.get_nowait()
-
-                        # Decide whether to include a proactive vision nudge.
-                        # This makes the agent act on what it SEES, not just hears.
-                        should_nudge = (now - self._last_image_nudge) >= NUDGE_INTERVAL
-
-                        if should_nudge:
-                            # Send image + text together so Gemini analyzes both
-                            self._live_queue.send_content(
-                                content=types.Content(
-                                    role="user",
-                                    parts=[
-                                        types.Part(
-                                            inline_data=types.Blob(data=frame, mime_type=frame_mime)
-                                        ),
-                                        types.Part(text=(
-                                            "Canvas updated. Look carefully at what you see — "
-                                            "including any freehand sketches or marker strokes. "
-                                            "If you notice an unconnected idea, a missing link, "
-                                            "or a provocation opportunity, act on it silently. "
-                                            "If nothing stands out, do nothing."
-                                        ))
-                                    ]
-                                )
-                            )
-                            self._last_image_nudge = now
-                        else:
-                            # Send image only (vision context update, no trigger)
-                            self._live_queue.send_realtime(
-                                types.Blob(data=frame, mime_type=frame_mime)
-                            )
-
+                        self._live_queue.send_realtime(
+                            types.Blob(data=frame, mime_type=frame_mime)
+                        )
                         self._last_image_sent = now
                     except asyncio.QueueEmpty:
                         pass
                 elif not self._image_queue.empty():
-                    # Drain stale frames
+                    # Drain stale frames so queue doesn't block
                     while not self._image_queue.empty():
                         try: self._image_queue.get_nowait()
                         except asyncio.QueueEmpty: break
@@ -416,10 +501,7 @@ class AlphaSurfaceAgent:
                 if event.get_function_calls():
                     await self.broadcast_fn({"type": "ai_status", "payload": {"status": "thinking"}})
 
-                # ── Barge-in interrupt ─────────────────────────────────────
-                # Fires when Gemini VAD detects user speech during AI output.
-                # Frontend must flush its audio playback queue.
-                # Requires echoCancellation:true in browser getUserMedia().
+                # ── Barge-in ───────────────────────────────────────────────
                 if getattr(event, "interrupted", False):
                     print("[Agent] Barge-in — flushing frontend audio")
                     await self.broadcast_fn({"type": "ai_interrupted", "payload": {}})
@@ -427,9 +509,6 @@ class AlphaSurfaceAgent:
 
                 # ── Turn complete ──────────────────────────────────────────
                 if event.turn_complete:
-                    if not self._ready.is_set():
-                        self._ready.set()
-                        print("[Agent] Greeting done — mic live")
                     await self.broadcast_fn({"type": "ai_status", "payload": {"status": "idle"}})
 
         except Exception as e:

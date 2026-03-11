@@ -182,6 +182,37 @@ function handleCanvasMessage(editor, message) {
       flushAudioPlayback()
       break
 
+    case "add_image": {
+      const { id, x, y, width, height, src } = message;
+      const assetId = AssetRecordType.createId();
+      editor.createAssets([{
+        id: assetId,
+        type: "image",
+        typeName: "asset",
+        props: {
+          name: id || "image",
+          src: src,
+          w: width ?? 480,
+          h: height ?? 480,
+          mimeType: "image/png",
+          isAnimated: false,
+        },
+        meta: {},
+      }]);
+      editor.createShape({
+        id: createShapeId(id),
+        type: "image",
+        x: x ?? 200,
+        y: y ?? 200,
+        props: {
+          w: width ?? 480,
+          h: height ?? 480,
+          assetId: assetId,
+        },
+      });
+      break;
+    }
+
     case "ai_status":
     case "canvas_snapshot":
     case "config_ack":

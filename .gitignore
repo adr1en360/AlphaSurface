@@ -11,3 +11,6 @@ frontend/dist/
 # Environment variables (never commit secrets)
 .env
 *.env
+
+Gemini.md
+info.txt

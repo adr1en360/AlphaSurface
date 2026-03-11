@@ -5,6 +5,12 @@ Message flow:
   Browser → WebSocket → main.py → agent.push_audio / push_canvas_image
   Agent tool call → tools.py enqueues → agent._action_drain_loop → broadcast → browser
 
+Changes from v1:
+  ✅ EventBus wired — canvas changes signal the bus (not timer-based)
+  ✅ PersonaAgent started at app startup
+  ✅ canvas_snapshot change detection: only signals bus when shape inventory changed
+  ✅ set_config reconfigure now properly restarts the session
+
 Run:
   uvicorn main:app --reload --port 8000
 """
@@ -16,11 +22,16 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from agent import AlphaSurfaceAgent
+from event_bus import get_event_bus
 import tools as canvas_tools
+from sub_agents.persona_agent import get_persona_agent
+from dispatcher import run_dispatcher, register_handler
+from agent_tasks import dispatch
 
 load_dotenv()
 
@@ -32,7 +43,7 @@ CANVAS_PASSTHROUGH_TYPES = {
     "bind_arrow", "add_embed", "add_bookmark",
     "delete_shapes", "update_shape", "move_shape",
     "clear_canvas", "zoom_to_fit", "focus_shape",
-    "select_shapes", "ai_interrupted", "ai_status",
+    "select_shapes",
 }
 
 
@@ -49,22 +60,68 @@ async def broadcast(message: dict):
             connected_clients.remove(ws)
 
 
-# ── Agent singleton ───────────────────────────────────────────────────────────
+# ── Agent + EventBus singletons ───────────────────────────────────────────────
 agent = AlphaSurfaceAgent(
     broadcast_fn=broadcast,
     mode=os.environ.get("ALPHASURFACE_MODE", "think"),
     web_search=os.environ.get("ALPHASURFACE_WEB_SEARCH", "false").lower() == "true",
 )
 
+bus = get_event_bus()
+persona_agent = get_persona_agent()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Start event bus monitor
+    bus.start()
+
+    # Start persona agent (subscribes to bus events)
+    persona_agent.start()
+
+    # Start agent dispatcher (routes tasks from queue to sub-agents)
+    asyncio.create_task(run_dispatcher())
+
+    # Register provocation as a dispatched handler so Live Agent can also trigger it
+    async def _provocation_handler(payload: dict):
+        await agent._on_provocation_ready()
+    register_handler("provocation", _provocation_handler)
+
+    # Register ResearchAgent
+    from sub_agents.research_agent import run_research
+    async def _research_handler(payload: dict):
+        await run_research(payload, broadcast)
+    register_handler("research", _research_handler)
+
+    # Register ImageGenAgent
+    from sub_agents.image_gen_agent import run_image_gen
+    async def _image_gen_handler(payload: dict):
+        await run_image_gen(payload, broadcast)
+    register_handler("image_gen", _image_gen_handler)
+
+    # Register YouTubeAgent
+    from sub_agents.youtube_agent import run_youtube
+    async def _youtube_handler(payload: dict):
+        await run_youtube(payload, broadcast)
+    register_handler("youtube", _youtube_handler)
+
+    # Start live agent
     asyncio.create_task(agent.start())
+
     yield
+
+    # Shutdown
+    bus.stop()
+    persona_agent.stop()
     await agent.stop()
 
 
 app = FastAPI(lifespan=lifespan)
+
+# Serve generated images at /static/images/{filename}
+_static_dir = os.path.join(os.path.dirname(__file__), "static")
+os.makedirs(_static_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 app.add_middleware(
     CORSMiddleware,
@@ -85,6 +142,7 @@ async def health():
         "mode": agent.mode,
         "web_search": agent.web_search,
         "clients": len(connected_clients),
+        "canvas_shapes": canvas_tools.canvas_state["shape_count"],
     }
 
 
@@ -111,11 +169,13 @@ async def websocket_endpoint(websocket: WebSocket):
             msg_type: str = message.get("type", "")
             payload: dict = message.get("payload", {})
 
-            # ── Canvas shape inventory (rich: includes bounds) ────────────
+            # ── Canvas shape inventory ────────────────────────────────────
             if msg_type == "canvas_snapshot":
                 shapes = payload.get("shapes", [])
                 shape_count = payload.get("shape_count", 0)
-                canvas_tools.update_canvas_state(shapes, shape_count)
+                changed = canvas_tools.update_canvas_state(shapes, shape_count)
+                if changed:
+                    bus.signal_canvas_change()  # ← event-driven, not timer
 
             # ── Canvas screenshot → Gemini vision ─────────────────────────
             elif msg_type == "canvas_image":
@@ -129,10 +189,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 b64 = payload.get("data", "")
                 if b64:
                     agent.push_audio(base64.b64decode(b64))
+                    # NOTE: bus.signal_audio() is called inside agent.push_audio()
 
             # ── Launch config from settings UI ────────────────────────────
-            # Sent once when user clicks "Launch" in the config screen.
-            # Reconfigures the agent mode and web_search flag.
             elif msg_type == "set_config":
                 mode = payload.get("mode", agent.mode)
                 web_search = payload.get("webSearch", agent.web_search)
@@ -143,12 +202,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     "payload": {"mode": mode, "webSearch": web_search}
                 }))
 
-            # ── Canvas action passthrough ─────────────────────────────────
+            # ── Canvas action passthrough (agent → all clients) ───────────
             elif msg_type in CANVAS_PASSTHROUGH_TYPES:
                 await broadcast(message)
 
-            # ── Local mute toggle — no backend action needed ──────────────
+            # ── Local mute toggle ─────────────────────────────────────────
             elif msg_type == "set_audio":
+                pass
+
+            # ── Status messages sent by agent — don't re-broadcast ────────
+            elif msg_type in {"ai_interrupted", "ai_status", "audio_response", "config_ack"}:
                 pass
 
             else:
