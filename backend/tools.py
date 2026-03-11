@@ -406,6 +406,17 @@ def dispatch_youtube(query: str) -> str:
     return f"YouTube search dispatched: {query}"
 
 
+def dispatch_super_think() -> str:
+    """
+    Trigger SuperThink — a deep multi-step analysis of everything currently on the canvas.
+    Places three clusters: Synthesis (what it all means), Tensions (contradictions),
+    and Open Questions (what's missing). Use when the user asks to 'think harder',
+    'deep dive', 'analyze this', or 'super think'.
+    """
+    dispatch("super_think", {}, source="live_agent")
+    return "SuperThink analysis started"
+
+
 # ── Tool registry ─────────────────────────────────────────────────────────────
 ALL_TOOLS = [
     # READ
@@ -435,4 +446,5 @@ ALL_TOOLS = [
     dispatch_research,
     dispatch_image_gen,
     dispatch_youtube,
+    dispatch_super_think,
 ]

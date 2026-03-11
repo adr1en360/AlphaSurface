@@ -105,6 +105,12 @@ async def lifespan(app: FastAPI):
         await run_youtube(payload, broadcast)
     register_handler("youtube", _youtube_handler)
 
+    # Register SuperThinkAgent (reads live canvas_state from tools module)
+    from sub_agents.super_think_agent import run_super_think
+    async def _super_think_handler(payload: dict):
+        await run_super_think(payload, broadcast, canvas_tools.canvas_state)
+    register_handler("super_think", _super_think_handler)
+
     # Start live agent
     asyncio.create_task(agent.start())
 
