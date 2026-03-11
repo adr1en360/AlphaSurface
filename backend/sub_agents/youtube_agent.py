@@ -1,15 +1,13 @@
 """
-AlphaSurface — YouTubeAgent
-
-Triggered by:
-  Live Agent calls dispatch_youtube("topic") → task lands in queue
+AlphaSurface — YouTubeAgent (Hybrid: Gemini + YouTube Data API v3)
 
 Flow:
-  1. Receives {query: str} payload from dispatcher
-  2. Runs ADK Agent with google_search to find top YouTube URLs for the topic
-  3. Places each video on canvas as an embed shape (tldraw's YouTube iframe embed)
+  1. Gemini optimizes the user query into the best YouTube search string
+  2. YouTube Data API v3 returns real video IDs + duration metadata
+  3. Duration filter: skips livestreams and very long videos (>90 min)
+  4. Places the best 1-3 videos on canvas as embed shapes (playable iframe)
 
-Canvas layout: videos laid out vertically, staggered slightly so titles don't overlap.
+Requires: YOUTUBE_API_KEY in .env
 """
 
 import asyncio
@@ -18,49 +16,174 @@ import random
 import re
 from typing import Optional
 
-from pydantic import BaseModel, Field
-
-from google.adk.agents import Agent
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
-from google.adk.tools import google_search
-from google.genai import types
+from googleapiclient.discovery import build
+from google.genai import Client
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 _MODEL = "gemini-2.5-flash"
+_MAX_RESULTS = 5          # candidates to fetch from YouTube API
+_MAX_DURATION_SECS = 5400  # 90 minutes — skip anything longer (livestream/movie)
+_MIN_DURATION_SECS = 60    # 1 minute — skip very short clips
 
-_SYSTEM_PROMPT = """\
-You are a YouTube research assistant. Your job is to find the best YouTube videos
-for a given topic and return structured information so they can be embedded on a canvas.
+# ── YouTube API client ────────────────────────────────────────────────────────
 
-Rules:
-- Use google_search to find real YouTube videos (search for: "<topic> site:youtube.com")
-- Return 2-4 of the most relevant, high-quality videos
-- Each video MUST have a full youtube.com/watch?v= URL (not shortened links)
-- Prefer tutorial, explainer, or documentary content over short clips
-- NEVER guess or fabricate video URLs — only return URLs found via search
-"""
-
-
-class YouTubeVideo(BaseModel):
-    title: str = Field(description="Short video title (max 8 words)")
-    url: str = Field(description="Full YouTube URL: https://www.youtube.com/watch?v=XXXX")
-    channel: Optional[str] = Field(description="Channel name, or null if not found")
+def _get_youtube_client():
+    api_key = os.getenv("YOUTUBE_API_KEY", "")
+    if not api_key or api_key == "YOUR_YOUTUBE_API_KEY_HERE":
+        return None
+    return build("youtube", "v3", developerKey=api_key)
 
 
-class YouTubeResult(BaseModel):
-    topic: str = Field(description="Short topic label (max 4 words)")
-    videos: list[YouTubeVideo] = Field(description="2-4 YouTube videos, best first")
+def _parse_iso8601_duration(iso: str) -> int:
+    """
+    Parse YouTube ISO 8601 duration string like PT1H23M45S → seconds.
+    Returns -1 for livestreams (which have no duration).
+    """
+    if not iso or iso == "P0D":
+        return -1  # live stream
+    pattern = r"P(?:(\d+)D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"
+    m = re.match(pattern, iso)
+    if not m:
+        return -1
+    days = int(m.group(1) or 0)
+    hours = int(m.group(2) or 0)
+    minutes = int(m.group(3) or 0)
+    seconds = int(m.group(4) or 0)
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
-# ── Canvas placement helpers ──────────────────────────────────────────────────
+def _format_duration(secs: int) -> str:
+    """Return human-readable duration like '12:34' or '1:23:45'."""
+    if secs < 0:
+        return "LIVE"
+    h = secs // 3600
+    m = (secs % 3600) // 60
+    s = secs % 60
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+# ── Query optimisation via Gemini ─────────────────────────────────────────────
+
+_gemini_client: Optional[Client] = None
+
+def _get_gemini_client() -> Client:
+    global _gemini_client
+    if _gemini_client is None:
+        _gemini_client = Client(api_key=os.getenv("GEMINI_API_KEY", ""))
+    return _gemini_client
+
+
+async def _optimise_query(user_query: str) -> str:
+    """
+    Use Gemini to turn a conversational request into the best YouTube search string.
+    E.g. "show me quantum teleportation" → "quantum teleportation explained science"
+    """
+    try:
+        client = _get_gemini_client()
+        system = (
+            "You are a YouTube search specialist. "
+            "Turn the user's request into the single best YouTube search query. "
+            "Focus on educational, tutorial, or documentary content. "
+            "Return ONLY the search query string — no punctuation, no explanation."
+        )
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=_MODEL,
+            contents=[user_query],
+            config={"system_instruction": system},
+        )
+        optimised = response.text.strip().strip('"')
+        print(f"[YouTubeAgent] Optimised query: {optimised!r}")
+        return optimised
+    except Exception as e:
+        print(f"[YouTubeAgent] Query optimisation failed ({e}), using raw query")
+        return user_query
+
+
+# ── YouTube API search + filter ───────────────────────────────────────────────
+
+async def _search_youtube(query: str) -> list[dict]:
+    """
+    Search YouTube API, fetch durations, filter out livestreams and
+    very long or very short videos. Returns list of video dicts.
+    """
+    yt = _get_youtube_client()
+    if not yt:
+        print("[YouTubeAgent] YOUTUBE_API_KEY not set — cannot search.")
+        return []
+
+    try:
+        # Step 1: search
+        search_req = yt.search().list(
+            q=query,
+            part="snippet",
+            type="video",
+            maxResults=_MAX_RESULTS,
+            relevanceLanguage="en",
+            safeSearch="moderate",
+        )
+        search_res = await asyncio.to_thread(search_req.execute)
+        items = search_res.get("items", [])
+
+        if not items:
+            return []
+
+        # Step 2: fetch durations via videos.list
+        video_ids = [item["id"]["videoId"] for item in items]
+        detail_req = yt.videos().list(
+            id=",".join(video_ids),
+            part="contentDetails,snippet",
+        )
+        detail_res = await asyncio.to_thread(detail_req.execute)
+        details = {v["id"]: v for v in detail_res.get("items", [])}
+
+        # Step 3: build + filter results
+        videos = []
+        for item in items:
+            vid_id = item["id"]["videoId"]
+            detail = details.get(vid_id, {})
+            content = detail.get("contentDetails", {})
+            snippet = item["snippet"]
+
+            duration_iso = content.get("duration", "")
+            duration_secs = _parse_iso8601_duration(duration_iso)
+
+            # Skip livestreams and out-of-range durations
+            if duration_secs < 0:
+                print(f"[YouTubeAgent] Skipping livestream: {snippet['title']}")
+                continue
+            if duration_secs < _MIN_DURATION_SECS:
+                print(f"[YouTubeAgent] Skipping too-short ({duration_secs}s): {snippet['title']}")
+                continue
+            if duration_secs > _MAX_DURATION_SECS:
+                print(f"[YouTubeAgent] Skipping too-long ({_format_duration(duration_secs)}): {snippet['title']}")
+                continue
+
+            videos.append({
+                "video_id": vid_id,
+                "title": snippet["title"],
+                "channel": snippet["channelTitle"],
+                "url": f"https://www.youtube.com/watch?v={vid_id}",
+                "duration_secs": duration_secs,
+                "duration_label": _format_duration(duration_secs),
+            })
+
+        return videos[:3]  # at most 3 on canvas
+
+    except Exception as e:
+        print(f"[YouTubeAgent] YouTube API error: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
+# ── Canvas placement ──────────────────────────────────────────────────────────
 
 def _canvas_pos():
-    """Return a base (x, y) position with slight randomness."""
-    base_x = random.randint(-700, 100)
-    base_y = random.randint(-400, 200)
-    return base_x, base_y
+    return random.randint(-700, 100), random.randint(-400, 200)
 
 
 def _make_shape_id(prefix: str) -> str:
@@ -68,26 +191,21 @@ def _make_shape_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
 
-def _is_valid_youtube_url(url: str) -> bool:
-    """Validate that the URL is a real YouTube watch URL."""
-    return bool(re.match(r"https?://(www\.)?youtube\.com/watch\?v=[\w-]{11}", url))
-
-
-async def _place_youtube_cluster(broadcast_fn, topic: str, videos: list[YouTubeVideo]):
-    """Broadcast embed shapes for each video, fanned vertically."""
+async def _place_videos(broadcast_fn, query: str, videos: list[dict]):
+    """Place each video as an iframe embed with a title label above it."""
     bx, by = _canvas_pos()
     embed_w, embed_h = 560, 315
-    gap = 40
+    gap = 48
 
-    # Topic label at top
+    # Label
     stamp_id = _make_shape_id("yt_stamp")
     await broadcast_fn({
         "type": "add_text",
         "payload": {
             "id": stamp_id,
             "x": bx,
-            "y": by - 30,
-            "text": f"▶ YouTubeAgent · {topic}",
+            "y": by - 32,
+            "text": f"▶ YouTubeAgent · {query}",
             "size": "s",
             "color": "red",
         }
@@ -95,13 +213,9 @@ async def _place_youtube_cluster(broadcast_fn, topic: str, videos: list[YouTubeV
     await asyncio.sleep(0.05)
 
     for i, video in enumerate(videos):
-        if not _is_valid_youtube_url(video.url):
-            print(f"[YouTubeAgent] Skipping invalid URL: {video.url}")
-            continue
-
         embed_y = by + i * (embed_h + gap)
 
-        # Title text above the embed
+        # Title + duration above embed
         title_id = _make_shape_id(f"yt_title_{i}")
         await broadcast_fn({
             "type": "add_text",
@@ -109,14 +223,14 @@ async def _place_youtube_cluster(broadcast_fn, topic: str, videos: list[YouTubeV
                 "id": title_id,
                 "x": bx,
                 "y": embed_y - 24,
-                "text": video.title + (f" · {video.channel}" if video.channel else ""),
+                "text": f"{video['title']}  [{video['duration_label']}]  · {video['channel']}",
                 "size": "s",
                 "color": "grey",
             }
         })
         await asyncio.sleep(0.05)
 
-        # Embed the YouTube iframe
+        # Embed
         embed_id = _make_shape_id(f"yt_embed_{i}")
         await broadcast_fn({
             "type": "add_embed",
@@ -124,7 +238,7 @@ async def _place_youtube_cluster(broadcast_fn, topic: str, videos: list[YouTubeV
                 "id": embed_id,
                 "x": bx,
                 "y": embed_y,
-                "url": video.url,
+                "url": video["url"],
                 "w": embed_w,
                 "h": embed_h,
             }
@@ -132,13 +246,13 @@ async def _place_youtube_cluster(broadcast_fn, topic: str, videos: list[YouTubeV
         await asyncio.sleep(0.15)
 
     await broadcast_fn({"type": "zoom_to_fit", "payload": {}})
-    print(f"[YouTubeAgent] Placed {len(videos)} video(s) for '{topic}'")
+    print(f"[YouTubeAgent] Placed {len(videos)} video(s) for '{query}'")
 
 
-# ── Core logic ────────────────────────────────────────────────────────────────
+# ── Main handler ──────────────────────────────────────────────────────────────
 
 async def run_youtube(payload: dict, broadcast_fn) -> None:
-    """Main handler. Called by dispatcher with payload = {\"query\": str}."""
+    """Main handler. Called by dispatcher with payload = {'query': str}."""
     query = payload.get("query", "").strip()
     if not query:
         print("[YouTubeAgent] Empty query — skipping")
@@ -147,87 +261,18 @@ async def run_youtube(payload: dict, broadcast_fn) -> None:
     print(f"[YouTubeAgent] Finding videos for: {query}")
 
     try:
-        session_service = InMemorySessionService()
-        await session_service.create_session(
-            app_name="alphasurface", user_id="user", session_id="youtube_session"
-        )
+        # 1. Gemini optimises the search query
+        search_query = await _optimise_query(query)
 
-        # Formatter agent (enforces schema, no tools)
-        youtube_formatter = Agent(
-            name="youtube_formatter",
-            model=_MODEL,
-            instruction=(
-                "Given the raw search results below, extract 2-4 real YouTube videos "
-                "matching the topic. Return ONLY real youtube.com/watch?v= URLs found "
-                "in the search results. Do NOT invent video IDs.\n\nSearch results:\n{raw_videos}"
-            ),
-            output_schema=YouTubeResult,
-            output_key="youtube_result",
-            disallow_transfer_to_parent=True,
-            disallow_transfer_to_peers=True,
-            generate_content_config=types.GenerateContentConfig(temperature=0),
-        )
-
-        # Fetcher agent (uses google_search, saves output to raw_videos in session state)
-        youtube_fetcher = Agent(
-            name="youtube_fetcher",
-            model=_MODEL,
-            instruction=_SYSTEM_PROMPT,
-            tools=[google_search],
-            output_key="raw_videos",
-            generate_content_config=types.GenerateContentConfig(temperature=0.1),
-        )
-
-        from google.adk.agents import SequentialAgent
-
-        pipeline = SequentialAgent(
-            name="youtube_pipeline",
-            sub_agents=[youtube_fetcher, youtube_formatter],
-        )
-
-        runner = Runner(
-            agent=pipeline,
-            app_name="alphasurface",
-            session_service=session_service,
-        )
-
-        message = types.Content(
-            role="user",
-            parts=[types.Part(text=f"Find the best YouTube videos about: {query}")]
-        )
-
-        async for event in runner.run_async(
-            user_id="user", session_id="youtube_session", new_message=message
-        ):
-            if event.is_final_response():
-                pass
-
-        session = await session_service.get_session(
-            app_name="alphasurface", user_id="user", session_id="youtube_session"
-        )
-        if not session or "youtube_result" not in session.state:
-            print("[YouTubeAgent] Failed to retrieve valid schema response.")
-            return
-
-        result: dict = session.state["youtube_result"]
-        topic = result.get("topic", query[:30])
-        raw_videos = result.get("videos", [])
-
-        videos = [
-            YouTubeVideo(
-                title=v.get("title", "Video"),
-                url=v.get("url", ""),
-                channel=v.get("channel"),
-            )
-            for v in raw_videos
-            if isinstance(v, dict) and _is_valid_youtube_url(v.get("url", ""))
-        ]
+        # 2. YouTube API returns real videos with duration metadata
+        videos = await _search_youtube(search_query)
 
         if not videos:
-            print("[YouTubeAgent] No valid YouTube URLs returned — skipping canvas placement.")
+            print("[YouTubeAgent] No suitable videos found — skipping canvas placement.")
             return
 
-        await _place_youtube_cluster(broadcast_fn, topic, videos)
+        # 3. Place on canvas
+        await _place_videos(broadcast_fn, query, videos)
 
     except Exception as e:
         print(f"[YouTubeAgent] Error: {e}")
