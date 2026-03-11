@@ -231,250 +231,11 @@ const STATUS = {
   disconnected: { label: "Offline",    dot: "#6b7280", pulse: false },
 }
 
+import OnboardingFlow from "./components/OnboardingFlow"
+
 // ═══════════════════════════════════════════════════════════════════════════════
-// LAUNCH SCREEN
+// ONBOARDING SCREEN (Replaced LaunchScreen)
 // ═══════════════════════════════════════════════════════════════════════════════
-function LaunchScreen({ onLaunch }) {
-  const [mode, setMode] = useState("think")
-  const [voiceEnabled, setVoiceEnabled] = useState(true)
-  const [webSearch, setWebSearch] = useState(false)
-  const [mcpInput, setMcpInput] = useState("")
-  const [mcps, setMcps] = useState([])
-  const [showAdvanced, setShowAdvanced] = useState(false)
-
-  const addMcp = () => {
-    const url = mcpInput.trim()
-    if (url && !mcps.includes(url)) { setMcps(m => [...m, url]); setMcpInput("") }
-  }
-
-  return (
-    <div style={{
-      position: "fixed", inset: 0,
-      background: "radial-gradient(ellipse at 60% 40%, #0f172a 0%, #020617 100%)",
-      display: "flex", alignItems: "flex-start", justifyContent: "center",
-      overflowY: "auto",
-      padding: "24px 0",
-      fontFamily: "'Inter', 'Segoe UI', sans-serif",
-      color: "#e2e8f0",
-    }}>
-      {/* Ambient glow */}
-      <div style={{
-        position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none"
-      }}>
-        <div style={{
-          position: "absolute", top: "20%", left: "30%",
-          width: 600, height: 600,
-          background: "radial-gradient(circle, rgba(139,92,246,0.08) 0%, transparent 70%)",
-          transform: "translate(-50%,-50%)",
-        }} />
-        <div style={{
-          position: "absolute", top: "70%", left: "70%",
-          width: 400, height: 400,
-          background: "radial-gradient(circle, rgba(6,182,212,0.06) 0%, transparent 70%)",
-          transform: "translate(-50%,-50%)",
-        }} />
-      </div>
-
-      <div style={{ position: "relative", zIndex: 1, width: "100%", maxWidth: 520, padding: "0 24px" }}>
-        {/* Logo */}
-          <div style={{ textAlign: "center", marginBottom: 20 }}>
-          <div style={{ fontSize: 30, fontWeight: 700, letterSpacing: "-1px", marginBottom: 4 }}>
-            <span style={{ color: "#8b5cf6" }}>Alpha</span>
-            <span style={{ color: "#e2e8f0" }}>Surface</span>
-          </div>
-          <div style={{ fontSize: 13, color: "#64748b", fontWeight: 400 }}>
-            AI that thinks alongside you — not for you
-          </div>
-        </div>
-
-        {/* Card */}
-        <div style={{
-          background: "rgba(15, 23, 42, 0.8)",
-          border: "1px solid rgba(148,163,184,0.1)",
-          borderRadius: 16, padding: "20px 24px",
-          backdropFilter: "blur(12px)",
-          boxShadow: "0 25px 50px rgba(0,0,0,0.5)",
-        }}>
-
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", letterSpacing: "0.08em", marginBottom: 10, textTransform: "uppercase" }}>
-              Session Mode
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              {[
-                {
-                  id: "think",
-                  title: "Think Mode",
-                  subtitle: "Solo thinking · Student · Research",
-                  icon: "🧠",
-                  desc: "Blank canvas. AI injects Sarkar provocations — open questions, missing links — as you think.",
-                },
-                {
-                  id: "explain",
-                  title: "Explain Mode",
-                  subtitle: "Teacher · Presenter · Live lecture",
-                  icon: "📡",
-                  desc: "Pre-loaded docs. AI surfaces relevant material and generates visuals without interrupting.",
-                },
-              ].map(m => (
-                <button
-                  key={m.id}
-                  onClick={() => setMode(m.id)}
-                  style={{
-                    background: mode === m.id
-                      ? "rgba(139,92,246,0.15)"
-                      : "rgba(30,41,59,0.6)",
-                    border: mode === m.id
-                      ? "1px solid rgba(139,92,246,0.5)"
-                      : "1px solid rgba(148,163,184,0.08)",
-                    borderRadius: 10, padding: "10px 12px",
-                    cursor: "pointer", textAlign: "left",
-                    color: "#e2e8f0",
-                    transition: "all 0.15s ease",
-                  }}
-                >
-                  <div style={{ fontSize: 16, marginBottom: 4 }}>{m.icon}</div>
-                  <div style={{ fontSize: 11, color: mode === m.id ? "#c4b5fd" : "#e2e8f0", marginBottom: 2 }}>{m.title}</div>
-                  <div style={{ fontSize: 10, color: "#64748b", marginBottom: 4 }}>{m.subtitle}</div>
-                  <div style={{ fontSize: 10, color: "#475569", lineHeight: 1.4 }}>{m.desc}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
-            {[
-              {
-                label: "Voice", sublabel: "Mic + AI audio responses",
-                value: voiceEnabled, toggle: () => setVoiceEnabled(v => !v),
-                icon: voiceEnabled ? "🎙️" : "🔇",
-              },
-              {
-                label: "Web Search", sublabel: "AI can look things up and bookmark results",
-                value: webSearch, toggle: () => setWebSearch(v => !v),
-                icon: "🔍",
-              },
-            ].map(t => (
-              <div
-                key={t.label}
-                onClick={t.toggle}
-                style={{
-                  display: "flex", alignItems: "center", gap: 10,
-                  padding: "9px 12px", borderRadius: 10, cursor: "pointer",
-                  background: t.value ? "rgba(139,92,246,0.08)" : "rgba(30,41,59,0.4)",
-                  border: t.value ? "1px solid rgba(139,92,246,0.25)" : "1px solid rgba(148,163,184,0.07)",
-                  transition: "all 0.15s ease",
-                }}
-              >
-                <span style={{ fontSize: 18, width: 24, textAlign: "center" }}>{t.icon}</span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: "#e2e8f0" }}>{t.label}</div>
-                  <div style={{ fontSize: 11, color: "#64748b" }}>{t.sublabel}</div>
-                </div>
-                {/* Pill toggle */}
-                <div style={{
-                  width: 36, height: 20, borderRadius: 10,
-                  background: t.value ? "#8b5cf6" : "#334155",
-                  position: "relative", transition: "background 0.15s ease",
-                  flexShrink: 0,
-                }}>
-                  <div style={{
-                    position: "absolute", top: 2,
-                    left: t.value ? 18 : 2,
-                    width: 16, height: 16, borderRadius: "50%",
-                    background: "#fff", transition: "left 0.15s ease",
-                  }} />
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div style={{ marginBottom: 14 }}>
-            <button
-              onClick={() => setShowAdvanced(v => !v)}
-              style={{
-                background: "none", border: "none", cursor: "pointer",
-                color: "#64748b", fontSize: 12, padding: 0,
-                display: "flex", alignItems: "center", gap: 6,
-              }}
-            >
-              <span style={{ transform: showAdvanced ? "rotate(90deg)" : "none", display: "inline-block", transition: "transform 0.15s" }}>▶</span>
-              Advanced · Custom MCP servers
-            </button>
-            {showAdvanced && (
-              <div style={{ marginTop: 12, padding: "14px", borderRadius: 10, background: "rgba(15,23,42,0.6)", border: "1px solid rgba(148,163,184,0.07)" }}>
-                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 10 }}>
-                  Add MCP server URLs. These extend what the AI can do (databases, APIs, custom tools).
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input
-                    value={mcpInput}
-                    onChange={e => setMcpInput(e.target.value)}
-                    onKeyDown={e => e.key === "Enter" && addMcp()}
-                    placeholder="https://mcp.example.com/sse"
-                    style={{
-                      flex: 1, background: "rgba(30,41,59,0.6)",
-                      border: "1px solid rgba(148,163,184,0.1)", borderRadius: 7,
-                      padding: "8px 10px", color: "#e2e8f0", fontSize: 12,
-                      outline: "none",
-                    }}
-                  />
-                  <button
-                    onClick={addMcp}
-                    style={{
-                      background: "#334155", border: "none", borderRadius: 7,
-                      padding: "8px 12px", cursor: "pointer", color: "#94a3b8", fontSize: 12,
-                    }}
-                  >Add</button>
-                </div>
-                {mcps.length > 0 && (
-                  <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {mcps.map(url => (
-                      <div key={url} style={{
-                        background: "rgba(139,92,246,0.1)", border: "1px solid rgba(139,92,246,0.2)",
-                        borderRadius: 6, padding: "3px 8px", fontSize: 11, color: "#c4b5fd",
-                        display: "flex", alignItems: "center", gap: 6,
-                      }}>
-                        {url.replace("https://", "")}
-                        <span onClick={() => setMcps(m => m.filter(u => u !== url))} style={{ cursor: "pointer", color: "#64748b" }}>×</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Launch button */}
-          <button
-            onClick={() => onLaunch({ mode, voiceEnabled, webSearch, mcps })}
-            style={{
-              width: "100%", padding: "11px",
-              background: "linear-gradient(135deg, #8b5cf6, #6d28d9)",
-              border: "none", borderRadius: 10, cursor: "pointer",
-              color: "#fff", fontSize: 14, fontWeight: 600, letterSpacing: "0.02em",
-              boxShadow: "0 4px 24px rgba(139,92,246,0.35)",
-              transition: "all 0.15s ease",
-            }}
-            onMouseEnter={e => e.currentTarget.style.transform = "translateY(-1px)"}
-            onMouseLeave={e => e.currentTarget.style.transform = "none"}
-          >
-            Launch Canvas →
-          </button>
-        </div>
-
-        <div style={{ textAlign: "center", marginTop: 12, fontSize: 10, color: "#1e293b" }}>
-          AlphaSurface · Built for Google Live API Hackathon
-        </div>
-      </div>
-
-      <style>{`
-        * { box-sizing: border-box; }
-        input::placeholder { color: #334155; }
-      `}</style>
-    </div>
-  )
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CANVAS INNER  (mounts inside <Tldraw>)
@@ -506,7 +267,12 @@ function AlphaSurfaceInner({ config }) {
         // Send launch config to backend
         socket.send(JSON.stringify({
           type: "set_config",
-          payload: { mode: config.mode, webSearch: config.webSearch, mcps: config.mcps }
+          payload: { 
+            mode: config.mode, 
+            webSearch: config.webSearch, 
+            mcps: config.mcps,
+            goal: config.goal // Pass the goal down to the backend
+          }
         }))
       }
 
@@ -803,14 +569,25 @@ function AlphaSurfaceInner({ config }) {
 // ROOT APP
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function App() {
-  const [config, setConfig] = useState(null)  // null = show launch screen
+  const [config, setConfig] = useState(() => {
+    const saved = localStorage.getItem("alpha_surface_config")
+    if (saved) {
+      try {
+        return JSON.parse(saved)
+      } catch (e) {
+        return null
+      }
+    }
+    return null
+  })
 
   const handleLaunch = useCallback((cfg) => {
     _playback.enabled = cfg.voiceEnabled
     setConfig(cfg)
+    localStorage.setItem("alpha_surface_config", JSON.stringify(cfg))
   }, [])
 
-  if (!config) return <LaunchScreen onLaunch={handleLaunch} />
+  if (!config) return <OnboardingFlow onComplete={handleLaunch} />
 
   return (
     <div style={{ position: "fixed", inset: 0 }}>

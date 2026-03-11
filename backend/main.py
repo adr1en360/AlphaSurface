@@ -32,6 +32,7 @@ import tools as canvas_tools
 from sub_agents.persona_agent import get_persona_agent
 from dispatcher import run_dispatcher, register_handler
 from agent_tasks import dispatch
+from memory import memory_store
 
 load_dotenv()
 
@@ -207,6 +208,17 @@ async def websocket_endpoint(websocket: WebSocket):
             elif msg_type == "set_config":
                 mode = payload.get("mode", agent.mode)
                 web_search = payload.get("webSearch", agent.web_search)
+                goal = payload.get("goal")
+                
+                # If a goal is provided, inject it into persona memory
+                if goal and isinstance(goal, str) and goal.strip():
+                    try:
+                        mem = memory_store()
+                        await mem.write("user", "current_focus", goal.strip())
+                        print(f"[WS] Saved user goal to memory: {goal.strip()}")
+                    except Exception as e:
+                        print(f"[WS] Failed to save goal to memory: {e}")
+
                 agent.reconfigure(mode=mode, web_search=web_search)
                 print(f"[WS] Config updated: mode={mode} web_search={web_search}")
                 await websocket.send_text(json.dumps({
