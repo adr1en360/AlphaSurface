@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react"
 import { Tldraw, useEditor, toRichText, getSnapshot, loadSnapshot, AssetRecordType, createShapeId } from "tldraw"
+import { Settings, Save, FolderOpen, FileUp } from "lucide-react"
 import "tldraw/tldraw.css"
 
 // ── Audio playback singleton ──────────────────────────────────────────────────
@@ -246,9 +247,31 @@ function AlphaSurfaceInner({ config }) {
   const [indicator, setIndicator] = useState(false)
   const [aiStatus, setAiStatus] = useState("disconnected")
   const [muted, setMuted] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
+  const [provocFreq, setProvocFreq] = useState("Normal")
+  const [provocStyle, setProvocStyle] = useState("Socratic")
+
   const wsRef = useRef(null)
   const prevShapeCount = useRef(0)
   const mutedRef = useRef(false)
+
+  const updateBackendConfig = (newFreq, newStyle) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: "set_config",
+        payload: {
+          mode: config.mode,
+          webSearch: config.webSearch,
+          mcps: config.mcps,
+          goal: config.goal,
+          audience: config.audience,
+          uploadedFile: config.uploadedFile,
+          provocationFrequency: newFreq ?? provocFreq,
+          provocationStyle: newStyle ?? provocStyle
+        }
+      }))
+    }
+  }
 
   // ── WebSocket connection ────────────────────────────────────────────────────
   useEffect(() => {
@@ -271,7 +294,11 @@ function AlphaSurfaceInner({ config }) {
             mode: config.mode, 
             webSearch: config.webSearch, 
             mcps: config.mcps,
-            goal: config.goal // Pass the goal down to the backend
+            goal: config.goal,
+            audience: config.audience,
+            uploadedFile: config.uploadedFile,
+            provocationFrequency: provocFreq,
+            provocationStyle: provocStyle
           }
         }))
       }
@@ -451,6 +478,41 @@ function AlphaSurfaceInner({ config }) {
     input.click()
   }
 
+  const handleUploadClick = () => {
+    const input = Object.assign(document.createElement("input"), { type: "file", accept: ".pdf,.doc,.docx,.txt" })
+    input.onchange = async (e) => {
+      const file = e.target.files?.[0]
+      if (!file) return
+      
+      const formData = new FormData()
+      formData.append("file", file)
+      
+      try {
+        setAiStatus("thinking")
+        const res = await fetch("/api/upload", {
+          method: "POST",
+          body: formData
+        })
+        const data = await res.json()
+        if (data.status === "success" && wsRef.current?.readyState === WebSocket.OPEN) {
+          const id = createShapeId()
+          editor.createShape({
+            id,
+            type: "note", 
+            x: window.innerWidth / 2 - 100, 
+            y: window.innerHeight / 2 - 100,
+            props: { richText: toRichText(`📄 Uploaded Document: ${file.name}\n\nThe agent now has access to this file.`), color: "blue" }
+          })
+        }
+      } catch (err) {
+        console.error("Upload failed", err)
+      } finally {
+        if (wsRef.current?.readyState === WebSocket.OPEN) setAiStatus("idle")
+      }
+    }
+    input.click()
+  }
+
   const status = STATUS[aiStatus] ?? STATUS.disconnected
 
   return (
@@ -540,17 +602,167 @@ function AlphaSurfaceInner({ config }) {
       <div style={{
         position: "fixed", top: "50%", left: 18, transform: "translateY(-50%)",
         zIndex: 9999,
-        display: "flex", flexDirection: "column", gap: 6,
+        display: "flex", flexDirection: "column", gap: 10,
         fontFamily: "'Inter','Segoe UI',sans-serif",
       }}>
-        {[["Save", handleSave], ["Load", handleLoad]].map(([label, fn]) => (
+        {[
+          ["Save", handleSave, Save], 
+          ["Load", handleLoad, FolderOpen], 
+          ["Upload Doc", handleUploadClick, FileUp]
+        ].map(([label, fn, Icon]) => (
           <button key={label} onClick={fn} style={{
-            padding: "6px 14px", borderRadius: 8,
-            background: "rgba(10,10,10,0.65)", backdropFilter: "blur(10px)",
-            color: "#9ca3af", border: "1px solid rgba(255,255,255,0.07)",
-            cursor: "pointer", fontSize: 11, fontWeight: 500,
-          }}>{label}</button>
+            padding: "12px", borderRadius: 14,
+            background: "rgba(15, 23, 42, 0.6)", backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
+            color: "#94a3b8", border: "1px solid rgba(255,255,255,0.1)",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
+            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+            transition: "all 0.2s ease",
+            position: "relative",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = "#f8fafc";
+            e.currentTarget.style.background = "rgba(30, 41, 59, 0.8)";
+            e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)";
+            e.currentTarget.style.transform = "scale(1.05)";
+            const tooltip = e.currentTarget.querySelector(".btn-tooltip");
+            if (tooltip) {
+               tooltip.style.opacity = "1";
+               tooltip.style.transform = "translateX(0)";
+            }
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = "#94a3b8";
+            e.currentTarget.style.background = "rgba(15, 23, 42, 0.6)";
+            e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)";
+            e.currentTarget.style.transform = "scale(1)";
+            const tooltip = e.currentTarget.querySelector(".btn-tooltip");
+            if (tooltip) {
+               tooltip.style.opacity = "0";
+               tooltip.style.transform = "translateX(-5px)";
+            }
+          }}>
+            <Icon size={20} strokeWidth={2} />
+            <div className="btn-tooltip" style={{
+              position: "absolute", left: "100%", marginLeft: "14px",
+              background: "rgba(15, 23, 42, 0.95)", backdropFilter: "blur(8px)",
+              padding: "6px 10px", borderRadius: "8px",
+              fontSize: "13px", fontWeight: 500, color: "#f8fafc",
+              border: "1px solid rgba(255,255,255,0.1)",
+              pointerEvents: "none", opacity: 0, transform: "translateX(-5px)",
+              transition: "all 0.2s cubic-bezier(0.16, 1, 0.3, 1)", whiteSpace: "nowrap",
+              boxShadow: "0 4px 12px rgba(0,0,0,0.3)"
+            }}>
+              {label}
+            </div>
+          </button>
         ))}
+
+        <div style={{ width: "24px", height: "1px", background: "rgba(255,255,255,0.1)", margin: "4px auto" }} />
+
+        {/* Settings Button */}
+        <button 
+          onClick={() => setShowSettings(!showSettings)} 
+          style={{
+            padding: "12px", borderRadius: 14,
+            background: showSettings ? "rgba(6, 182, 212, 0.2)" : "rgba(15, 23, 42, 0.6)", 
+            backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
+            color: showSettings ? "#fff" : "#94a3b8", 
+            border: `1px solid ${showSettings ? "rgba(6, 182, 212, 0.5)" : "rgba(255,255,255,0.1)"}`,
+            boxShadow: showSettings ? "0 0 16px rgba(6,182,212,0.3)" : "0 4px 12px rgba(0,0,0,0.2)",
+            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+            transition: "all 0.2s ease", position: "relative"
+          }}
+          onMouseEnter={(e) => {
+            if (!showSettings) {
+                e.currentTarget.style.color = "#f8fafc";
+                e.currentTarget.style.background = "rgba(30, 41, 59, 0.8)";
+                e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)";
+            }
+            e.currentTarget.style.transform = "scale(1.05)";
+            const tooltip = e.currentTarget.querySelector(".btn-tooltip");
+            if (tooltip && !showSettings) {
+               tooltip.style.opacity = "1";
+               tooltip.style.transform = "translateX(0)";
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (!showSettings) {
+                e.currentTarget.style.color = "#94a3b8";
+                e.currentTarget.style.background = "rgba(15, 23, 42, 0.6)";
+                e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)";
+            }
+            e.currentTarget.style.transform = "scale(1)";
+            const tooltip = e.currentTarget.querySelector(".btn-tooltip");
+            if (tooltip) {
+               tooltip.style.opacity = "0";
+               tooltip.style.transform = "translateX(-5px)";
+            }
+          }}
+        >
+          <Settings size={20} strokeWidth={2} />
+          <div className="btn-tooltip" style={{
+              position: "absolute", left: "100%", marginLeft: "14px",
+              background: "rgba(15, 23, 42, 0.95)", backdropFilter: "blur(8px)",
+              padding: "6px 10px", borderRadius: "8px",
+              fontSize: "13px", fontWeight: 500, color: "#f8fafc",
+              border: "1px solid rgba(255,255,255,0.1)",
+              pointerEvents: "none", opacity: 0, transform: "translateX(-5px)",
+              transition: "all 0.2s cubic-bezier(0.16, 1, 0.3, 1)", whiteSpace: "nowrap",
+              boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+              display: showSettings ? "none" : "block"
+            }}>
+              Settings
+          </div>
+        </button>
+
+        {/* Settings Panel */}
+        {showSettings && (
+          <div style={{
+            position: "absolute", left: "100%", top: "40%", marginLeft: 16, width: 220,
+            background: "rgba(15, 23, 42, 0.9)", backdropFilter: "blur(20px)",
+            border: "1px solid rgba(148, 163, 184, 0.2)", borderRadius: 12, padding: 16,
+            boxShadow: "0 10px 30px rgba(0,0,0,0.5)", color: "#f8fafc"
+          }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, color: "#cbd5e1" }}>Provocation Settings</div>
+            
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.05em" }}>Frequency</div>
+              <div style={{ display: "flex", gap: 4, background: "rgba(0,0,0,0.3)", padding: 4, borderRadius: 8 }}>
+                {["Rare", "Normal", "Frequent"].map(f => (
+                  <button 
+                    key={f}
+                    onClick={() => { setProvocFreq(f); updateBackendConfig(f, provocStyle); }}
+                    style={{
+                      flex: 1, padding: "4px 0", fontSize: 11, cursor: "pointer",
+                      background: provocFreq === f ? "rgba(6, 182, 212, 0.3)" : "transparent",
+                      color: provocFreq === f ? "#fff" : "#94a3b8",
+                      border: "none", borderRadius: 4, transition: "all 0.2s"
+                    }}
+                  >{f}</button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.05em" }}>Style</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {["Socratic", "Direct", "Devil's Advocate"].map(s => (
+                  <button 
+                    key={s}
+                    onClick={() => { setProvocStyle(s); updateBackendConfig(provocFreq, s); }}
+                    style={{
+                      padding: "6px 8px", fontSize: 11, cursor: "pointer", textAlign: "left",
+                      background: provocStyle === s ? "rgba(6, 182, 212, 0.15)" : "transparent",
+                      color: provocStyle === s ? "#fff" : "#94a3b8",
+                      border: `1px solid ${provocStyle === s ? "rgba(6, 182, 212, 0.3)" : "transparent"}`, 
+                      borderRadius: 6, transition: "all 0.2s"
+                    }}
+                  >{s}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
 

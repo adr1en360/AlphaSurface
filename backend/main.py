@@ -21,7 +21,7 @@ import json
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -159,6 +159,21 @@ async def health():
     }
 
 
+@app.post("/api/upload")
+async def upload_document(file: UploadFile = File(...)):
+    docs_dir = os.path.join(os.path.dirname(__file__), "documents")
+    os.makedirs(docs_dir, exist_ok=True)
+    file_path = os.path.join(docs_dir, file.filename)
+    try:
+        content = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(content)
+        return {"status": "success", "filename": file.filename}
+    except Exception as e:
+        print(f"[Upload] Error saving file: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -209,6 +224,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 mode = payload.get("mode", agent.mode)
                 web_search = payload.get("webSearch", agent.web_search)
                 goal = payload.get("goal")
+                audience = payload.get("audience")
+                uploaded_file = payload.get("uploadedFile")
+                provoc_freq = payload.get("provocationFrequency")
+                provoc_style = payload.get("provocationStyle")
                 
                 # If a goal is provided, inject it into persona memory
                 if goal and isinstance(goal, str) and goal.strip():
@@ -218,6 +237,35 @@ async def websocket_endpoint(websocket: WebSocket):
                         print(f"[WS] Saved user goal to memory: {goal.strip()}")
                     except Exception as e:
                         print(f"[WS] Failed to save goal to memory: {e}")
+
+                # If an audience is provided, inject it into persona memory
+                if audience and isinstance(audience, str) and audience.strip():
+                    try:
+                        mem = memory_store()
+                        await mem.write("user", "audience", audience.strip())
+                        print(f"[WS] Saved audience to memory: {audience.strip()}")
+                    except Exception as e:
+                        print(f"[WS] Failed to save audience to memory: {e}")
+
+                # Save Provocation Settings to memory
+                if provoc_freq or provoc_style:
+                    try:
+                        mem = memory_store()
+                        if provoc_freq:
+                            await mem.write("user", "provocation_frequency", provoc_freq)
+                        if provoc_style:
+                            await mem.write("user", "provocation_style", provoc_style)
+                        print(f"[WS] Saved provocation settings to memory: Freq={provoc_freq}, Style={provoc_style}")
+                    except Exception as e:
+                        print(f"[WS] Failed to save provocation settings: {e}")
+
+                # If a file was uploaded during onboarding, trigger DocumentAgent
+                if uploaded_file and isinstance(uploaded_file, str) and uploaded_file.strip():
+                    try:
+                        print(f"[WS] Pre-loading document: {uploaded_file.strip()}")
+                        dispatch("document", {"query": uploaded_file.strip()}, source="event_bus")
+                    except Exception as e:
+                        print(f"[WS] Failed to dispatch document agent: {e}")
 
                 agent.reconfigure(mode=mode, web_search=web_search)
                 print(f"[WS] Config updated: mode={mode} web_search={web_search}")

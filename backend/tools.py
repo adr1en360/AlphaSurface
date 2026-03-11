@@ -60,6 +60,81 @@ def list_canvas_shapes() -> dict:
     }
 
 
+def find_empty_space_on_canvas(width: int, height: int) -> dict:
+    """
+    Finds a large enough empty coordinate space on the canvas to place new shapes 
+    without overlapping existing ones. 
+    Returns {"x": suggest_x, "y": suggest_y}.
+    
+    Args:
+        width: the required width of the empty space. Use 400 if unsure.
+        height: the required height of the empty space. Use 400 if unsure.
+    """
+    shapes = canvas_state["shapes"]
+    
+    # Simple grid search for empty space
+    # Canvas space: x range 80–1500, y range 60–950
+    for y in range(80, 950 - height, 100):
+        for x in range(80, 1500 - width, 100):
+            overlap = False
+            for shape in shapes:
+                if not isinstance(shape, dict): continue
+                sx = shape.get("x", 0)
+                sy = shape.get("y", 0)
+                sw = shape.get("w", 200)
+                sh = shape.get("h", 120)
+                # Check for rectangle intersection
+                if (x < sx + sw + 150 and x + width + 150 > sx and
+                    y < sy + sh + 150 and y + height + 150 > sy):
+                    overlap = True
+                    break
+            if not overlap:
+                return {"x": x, "y": y, "status": "found"}
+                
+    # Fallback if canvas is too full
+    return {"x": 800, "y": 500, "status": "canvas full, returning default"}
+
+
+def get_shapes_near_coordinate(x: int, y: int, radius: int) -> dict:
+    """
+    Finds all shapes within a specific radius of a coordinate point.
+    Useful for reading context around a specific area or finding what the user is working on in a specific region.
+    
+    Args:
+        x: Center X coordinate.
+        y: Center Y coordinate.
+        radius: Search radius. Use 300 if unsure.
+    """
+    shapes = canvas_state["shapes"]
+    nearby = []
+    
+    for shape in shapes:
+        if not isinstance(shape, dict): continue
+        sx = shape.get("x", 0)
+        sy = shape.get("y", 0)
+        sw = shape.get("w", 200)
+        sh = shape.get("h", 120)
+        
+        # Center of the shape
+        cx = sx + (sw / 2)
+        cy = sy + (sh / 2)
+        
+        # Distance squared
+        dist_sq = (cx - x)**2 + (cy - y)**2
+        if dist_sq <= radius**2:
+            nearby.append({
+                "id": shape.get("id"),
+                "text": shape.get("text") or shape.get("label") or "",
+                "type": shape.get("type"),
+                "distance": int(dist_sq**0.5)
+            })
+            
+    # Sort by closest first
+    nearby.sort(key=lambda s: s["distance"])
+    return {"nearby_shapes": nearby, "count": len(nearby)}
+
+
+
 def scan_canvas_text() -> dict:
     """
     Returns all text content from canvas shapes, grouped by type.
@@ -432,6 +507,8 @@ ALL_TOOLS = [
     # READ
     list_canvas_shapes,
     scan_canvas_text,
+    find_empty_space_on_canvas,
+    get_shapes_near_coordinate,
     # MEMORY
     memory_read,
     memory_write,

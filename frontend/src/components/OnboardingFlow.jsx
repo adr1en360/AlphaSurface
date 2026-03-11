@@ -6,6 +6,8 @@ export function OnboardingFlow({ onComplete }) {
   const [step, setStep] = useState(0); // 0 = Welcome, 1 = Mode, 2 = Goal
   const [mode, setMode] = useState(null);
   const [goal, setGoal] = useState("");
+  const [audience, setAudience] = useState(null);
+  const [uploadedFileName, setUploadedFileName] = useState("");
 
   const handleModeSelect = (selectedMode) => {
     setMode(selectedMode);
@@ -17,10 +19,35 @@ export function OnboardingFlow({ onComplete }) {
     onComplete({
       mode: mode,
       goal: goal.trim(),
+      audience: audience,
+      uploadedFile: uploadedFileName,
       voiceEnabled: true,
       webSearch: false,
       mcps: [] 
     });
+  };
+
+  const handleUploadClick = () => {
+    const input = Object.assign(document.createElement("input"), { type: "file", accept: ".pdf,.doc,.docx,.txt" });
+    input.onchange = async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const formData = new FormData();
+      formData.append("file", file);
+      try {
+        const res = await fetch("/api/upload", {
+          method: "POST",
+          body: formData
+        });
+        const data = await res.json();
+        if (data.status === "success") {
+          setUploadedFileName(file.name);
+        }
+      } catch (err) {
+        console.error("Upload failed", err);
+      }
+    };
+    input.click();
   };
 
   // Mouse tracking for reactive gradient
@@ -295,11 +322,11 @@ export function OnboardingFlow({ onComplete }) {
             animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
             exit={{ opacity: 0, y: -40 }}
             transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-            style={{ position: "relative", zIndex: 1, width: "100%", maxWidth: 640, padding: "0 24px" }}
+            style={{ position: "relative", zIndex: 1, width: "100%", maxWidth: 640, padding: "0 24px", display: "flex", flexDirection: "column", gap: 24 }}
           >
-             <div style={{ textAlign: "center", marginBottom: 48 }}>
+             <div style={{ textAlign: "center", marginBottom: 24 }}>
               <div style={{ fontSize: 32, fontWeight: 700, letterSpacing: "-0.03em", marginBottom: 12 }}>
-                What are you working on?
+                {mode === "explain" ? "Session setup" : "What are you working on?"}
               </div>
               <div style={{ fontSize: 16, color: "#94a3b8" }}>
                 Optional. Helps contextualise the canvas immediately. 
@@ -314,7 +341,7 @@ export function OnboardingFlow({ onComplete }) {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') handleFinish();
                 }}
-                placeholder="e.g. Planning a new app architecture..."
+                placeholder={mode === "explain" ? "e.g. Presenting quarterly metrics..." : "e.g. Planning a new app architecture..."}
                 style={{
                   width: "100%",
                   background: "rgba(15, 23, 42, 0.6)",
@@ -362,7 +389,58 @@ export function OnboardingFlow({ onComplete }) {
               </motion.button>
             </div>
 
-            <div style={{ textAlign: "center", marginTop: 32, display: "flex", justifyContent: "center", gap: 32 }}>
+            {mode === "explain" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 24, marginTop: 8 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#cbd5e1", marginBottom: 12, marginLeft: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                    Who are you presenting to?
+                  </div>
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
+                    {["Students", "Colleagues", "General Audience"].map((a) => (
+                      <button
+                        key={a}
+                        onClick={() => setAudience(a)}
+                        style={{
+                          background: audience === a ? "rgba(6, 182, 212, 0.2)" : "rgba(15, 23, 42, 0.6)",
+                          border: `1px solid ${audience === a ? "rgba(6, 182, 212, 0.5)" : "rgba(255, 255, 255, 0.05)"}`,
+                          color: audience === a ? "#fff" : "#94a3b8",
+                          padding: "12px 24px", borderRadius: 24, boxSizing: "border-box", fontSize: 14, cursor: "pointer", transition: "all 0.2s"
+                        }}
+                      >
+                        {a}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#cbd5e1", marginBottom: 12, marginLeft: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                    Pre-load Reference Material
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "center" }}>
+                    <button
+                      onClick={handleUploadClick}
+                      style={{
+                        background: uploadedFileName ? "rgba(52, 211, 153, 0.15)" : "rgba(15, 23, 42, 0.6)",
+                        border: uploadedFileName ? "1px solid rgba(52, 211, 153, 0.4)" : "1px dashed rgba(255, 255, 255, 0.2)",
+                        color: uploadedFileName ? "#34d399" : "#94a3b8",
+                        padding: "16px 32px", borderRadius: 24, width: "100%", fontSize: 15, cursor: "pointer", transition: "all 0.2s"
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!uploadedFileName) e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.4)";
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!uploadedFileName) e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.2)";
+                      }}
+                    >
+                      {uploadedFileName ? `📄 Uploaded: ${uploadedFileName}` : "Click to upload PDF / Docx notes"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div style={{ textAlign: "center", marginTop: 16, display: "flex", justifyContent: "center", gap: 32 }}>
               <button
                 onClick={() => setStep(1)}
                 style={{
@@ -384,7 +462,7 @@ export function OnboardingFlow({ onComplete }) {
                 onMouseEnter={(e) => e.target.style.color = "#f8fafc"}
                 onMouseLeave={(e) => e.target.style.color = "#64748b"}
               >
-                Skip & Start Canvas
+                {mode === "explain" ? "Start Presentation" : "Skip & Start Canvas"}
               </button>
             </div>
           </motion.div>
