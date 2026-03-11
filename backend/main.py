@@ -111,6 +111,12 @@ async def lifespan(app: FastAPI):
         await run_super_think(payload, broadcast, canvas_tools.canvas_state)
     register_handler("super_think", _super_think_handler)
 
+    # Register DocumentAgent
+    from sub_agents.document_agent import run_document
+    async def _document_handler(payload: dict):
+        await run_document(payload, broadcast)
+    register_handler("document", _document_handler)
+
     # Start live agent
     asyncio.create_task(agent.start())
 

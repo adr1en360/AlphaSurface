@@ -417,6 +417,16 @@ def dispatch_super_think() -> str:
     return "SuperThink analysis started"
 
 
+def dispatch_document(query: str) -> str:
+    """
+    Analyze a document (PDF or Word) in the documents folder.
+    Use when the user mentions a document name or says 'analyze this document'.
+    Provide a specific document name if mentioned, or a query about what to find.
+    """
+    dispatch("document", {"query": query}, source="live_agent")
+    return f"Document analysis dispatched: {query}"
+
+
 # ── Tool registry ─────────────────────────────────────────────────────────────
 ALL_TOOLS = [
     # READ
@@ -447,4 +457,5 @@ ALL_TOOLS = [
     dispatch_image_gen,
     dispatch_youtube,
     dispatch_super_think,
+    dispatch_document,
 ]

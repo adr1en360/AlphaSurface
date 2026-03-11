@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi[standard]>=0.135.1",
-    "google-adk>=1.10.0",
+    "google-adk[eval]>=1.10.0",
     "google-genai>=1.66.0",
     "httpx>=0.28.1",
     "pillow>=12.1.1",
@@ -16,5 +16,6 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "uvicorn[standard]>=0.41.0",
     "google-api-python-client>=2.163.0",
+    "python-docx>=1.1.2",
     "websockets>=16.0",
 ]
