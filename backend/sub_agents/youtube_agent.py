@@ -18,6 +18,7 @@ from typing import Optional
 
 from googleapiclient.discovery import build
 from google.genai import Client
+from sub_agents import emit_failure_note
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -278,3 +279,4 @@ async def run_youtube(payload: dict, broadcast_fn) -> None:
         print(f"[YouTubeAgent] Error: {e}")
         import traceback
         traceback.print_exc()
+        await emit_failure_note(broadcast_fn, "YouTubeAgent", e)

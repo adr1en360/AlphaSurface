@@ -22,6 +22,7 @@ from typing import Optional
 
 from google.genai import Client, types
 import os
+from sub_agents import emit_failure_note
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -258,3 +259,4 @@ async def run_super_think(payload: dict, broadcast_fn, canvas_state: dict) -> No
         print(f"[SuperThink] Error: {e}")
         import traceback
         traceback.print_exc()
+        await emit_failure_note(broadcast_fn, "SuperThinkAgent", e)

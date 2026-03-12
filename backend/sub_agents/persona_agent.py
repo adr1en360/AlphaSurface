@@ -191,6 +191,16 @@ class PersonaAgent:
 
             except Exception as e:
                 print(f"[PersonaAgent] Analysis error: {e}")
+                try:
+                    canvas_tools.add_note_to_canvas(
+                        text=f"PersonaAgent failed: {str(e)[:120]}",
+                        x=40,
+                        y=140,
+                        color="light-red",
+                        size="m",
+                    )
+                except Exception:
+                    pass
 
     async def increment_session_count(self):
         """Call this at session start to track how many sessions the user has had."""

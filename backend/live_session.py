@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import os
 import time
 from typing import Callable, Awaitable
@@ -34,7 +35,12 @@ class AlphaSurfaceAgent:
         self._runner: Runner | None = None
         self._session = None
         self.running = False
+        self._muted = False
         self._last_image_sent: float = 0.0
+        self._last_canvas_image_hash: str | None = None
+        self._pending_vision_trigger = False
+        self._last_vision_trigger: float = 0.0
+        self._vision_trigger_cooldown = 18.0
         self._ready = asyncio.Event()
         self._restart_requested = False
 
@@ -82,6 +88,11 @@ class AlphaSurfaceAgent:
 
     def push_canvas_image(self, image_bytes: bytes, mime: str = "image/png"):
         if self.running:
+            image_hash = hashlib.sha1(image_bytes).hexdigest()
+            if image_hash != self._last_canvas_image_hash:
+                self._last_canvas_image_hash = image_hash
+                self._pending_vision_trigger = True
+
             while not self._image_queue.empty():
                 try: self._image_queue.get_nowait()
                 except asyncio.QueueEmpty: break
@@ -94,6 +105,10 @@ class AlphaSurfaceAgent:
         self.running = False
         if self._live_queue:
             self._live_queue.close()
+
+    def set_mute_state(self, muted: bool):
+        self._muted = bool(muted)
+        print(f"[Agent] Mute state set: muted={self._muted}")
 
     async def _on_provocation_ready(self):
         if not self.running or not self._ready.is_set():
@@ -197,6 +212,7 @@ class AlphaSurfaceAgent:
         print("[Agent] Ready — mic live")
 
         IMAGE_INTERVAL = 20.0
+        MIN_IMAGE_GAP = 1.5
 
         while self.running:
             try:
@@ -210,19 +226,44 @@ class AlphaSurfaceAgent:
                     )
 
                 now = time.monotonic()
-                if not self._image_queue.empty() and (now - self._last_image_sent) >= IMAGE_INTERVAL:
+                has_frame = not self._image_queue.empty()
+                should_send_image = (
+                    has_frame
+                    and (
+                        (now - self._last_image_sent) >= IMAGE_INTERVAL
+                        or self._pending_vision_trigger
+                    )
+                    and (now - self._last_image_sent) >= MIN_IMAGE_GAP
+                )
+
+                if should_send_image:
                     try:
                         frame, frame_mime = self._image_queue.get_nowait()
                         self._live_queue.send_realtime(
                             types.Blob(data=frame, mime_type=frame_mime)
                         )
                         self._last_image_sent = now
+
+                        # Proactive behavior: react to meaningful visual deltas as they happen,
+                        # not only when silence/idle timers fire.
+                        if self._pending_vision_trigger and (now - self._last_vision_trigger) >= self._vision_trigger_cooldown:
+                            self._live_queue.send_content(
+                                content=types.Content(
+                                    role="user",
+                                    parts=[types.Part(text=(
+                                        "Fresh visual changes detected on the canvas. "
+                                        "Proactively inspect what changed and decide if one helpful action is warranted now "
+                                        "(e.g., connect related nodes, add a concise clarifying note, or ask one incisive question). "
+                                        "If no meaningful intervention is needed, do nothing. "
+                                        "Keep it brief and concrete."
+                                    ))],
+                                )
+                            )
+                            self._last_vision_trigger = now
+                            self._pending_vision_trigger = False
+                            print("[Agent] Proactive vision trigger fired")
                     except asyncio.QueueEmpty:
                         pass
-                elif not self._image_queue.empty():
-                    while not self._image_queue.empty():
-                        try: self._image_queue.get_nowait()
-                        except asyncio.QueueEmpty: break
 
                 await asyncio.sleep(0.05)
 
@@ -241,7 +282,7 @@ class AlphaSurfaceAgent:
                     for part in event.content.parts:
                         if hasattr(part, "inline_data") and part.inline_data:
                             audio_data = part.inline_data.data
-                            if audio_data:
+                            if audio_data and not self._muted:
                                 await self.broadcast_fn({"type": "ai_status", "payload": {"status": "speaking"}})
                                 await self.broadcast_fn({
                                     "type": "audio_response",
@@ -252,7 +293,10 @@ class AlphaSurfaceAgent:
                                     },
                                 })
 
-                if event.get_function_calls():
+                function_calls = event.get_function_calls()
+                if function_calls:
+                    for call in function_calls:
+                        print(f"[Agent] Tool call: {call.name} args={call.args}")
                     await self.broadcast_fn({"type": "ai_status", "payload": {"status": "thinking"}})
 
                 if getattr(event, "interrupted", False):

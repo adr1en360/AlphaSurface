@@ -25,6 +25,7 @@ from pathlib import Path
 
 from google import genai
 from google.genai import types
+from sub_agents import emit_failure_note
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -151,3 +152,4 @@ async def run_image_gen(payload: dict, broadcast_fn) -> None:
         print(f"[ImageGenAgent] Error: {e}")
         import traceback
         traceback.print_exc()
+        await emit_failure_note(broadcast_fn, "ImageGenAgent", e)

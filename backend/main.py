@@ -77,6 +77,34 @@ persona_agent = get_persona_agent()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    async def _run_subagent(agent_name: str, payload: dict, run_fn, *extra_args):
+        await broadcast({
+            "type": "ai_status",
+            "payload": {"status": f"{agent_name} running"},
+        })
+        try:
+            await run_fn(payload, broadcast, *extra_args)
+            await broadcast({
+                "type": "ai_status",
+                "payload": {"status": f"{agent_name} done"},
+            })
+        except Exception as e:
+            print(f"[SubAgent:{agent_name}] Error: {e}")
+            await broadcast({
+                "type": "add_note",
+                "payload": {
+                    "x": 40,
+                    "y": 40,
+                    "text": f"{agent_name} failed. Check terminal logs.",
+                    "color": "light-red",
+                    "size": "m",
+                },
+            })
+            await broadcast({
+                "type": "ai_status",
+                "payload": {"status": f"{agent_name} failed"},
+            })
+
     # Start event bus monitor
     bus.start()
 
@@ -94,31 +122,31 @@ async def lifespan(app: FastAPI):
     # Register ResearchAgent
     from sub_agents.research_agent import run_research
     async def _research_handler(payload: dict):
-        await run_research(payload, broadcast)
+        await _run_subagent("research", payload, run_research)
     register_handler("research", _research_handler)
 
     # Register ImageGenAgent
     from sub_agents.image_gen_agent import run_image_gen
     async def _image_gen_handler(payload: dict):
-        await run_image_gen(payload, broadcast)
+        await _run_subagent("image_gen", payload, run_image_gen)
     register_handler("image_gen", _image_gen_handler)
 
     # Register YouTubeAgent
     from sub_agents.youtube_agent import run_youtube
     async def _youtube_handler(payload: dict):
-        await run_youtube(payload, broadcast)
+        await _run_subagent("youtube", payload, run_youtube)
     register_handler("youtube", _youtube_handler)
 
     # Register SuperThinkAgent (reads live canvas_state from tools module)
     from sub_agents.super_think_agent import run_super_think
     async def _super_think_handler(payload: dict):
-        await run_super_think(payload, broadcast, canvas_tools.canvas_state)
+        await _run_subagent("super_think", payload, run_super_think, canvas_tools.canvas_state)
     register_handler("super_think", _super_think_handler)
 
     # Register DocumentAgent
     from sub_agents.document_agent import run_document
     async def _document_handler(payload: dict):
-        await run_document(payload, broadcast)
+        await _run_subagent("document", payload, run_document)
     register_handler("document", _document_handler)
 
     # Start live agent
@@ -292,7 +320,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # ── Local mute toggle ─────────────────────────────────────────
             elif msg_type == "set_audio":
-                pass
+                is_muted = bool(payload.get("muted", False))
+                agent.set_mute_state(is_muted)
+                await websocket.send_text(json.dumps({
+                    "type": "config_ack",
+                    "payload": {"muted": is_muted}
+                }))
 
             # ── Status messages sent by agent — don't re-broadcast ────────
             elif msg_type in {"ai_interrupted", "ai_status", "audio_response", "config_ack"}:

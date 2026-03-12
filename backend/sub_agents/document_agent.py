@@ -27,6 +27,7 @@ from google.adk.agents import Agent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
+from sub_agents import emit_failure_note
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -278,3 +279,4 @@ async def run_document(payload: dict, broadcast_fn) -> None:
         print(f"[DocumentAgent] Error: {e}")
         import traceback
         traceback.print_exc()
+        await emit_failure_note(broadcast_fn, "DocumentAgent", e)

@@ -14,7 +14,7 @@ Flow:
                    ──→ [Source bookmark] (if URL available)
   5. Calls signal_agent_acted() via dispatcher wrapper (already done)
 
-Canvas layout: title on left, bullets fanned out to the right.
+Canvas layout: newspaper-style single column with headline + sections.
 All shapes placed relative to current viewport center.
 """
 
@@ -32,6 +32,7 @@ from google.adk.tools import google_search
 from google.genai import types
 
 from event_bus import get_event_bus
+from sub_agents import emit_failure_note
 
 # ── Agent identity ───────────────────────────────────────────────────────────
 # Each agent stamps its output with a small attribution label on canvas.
@@ -87,101 +88,150 @@ async def _place_cluster(broadcast_fn, title: str, bullets: list[str],
                           source_url: str | None, source_label: str | None,
                           long_form: bool = False):
     """
-    Broadcast canvas actions to place a research result cluster.
+    Broadcast canvas actions in a newspaper-column layout.
     """
     bx, by = _canvas_pos()
 
-    title_id = _make_shape_id("res_title")
-    title_w, title_h = 260, 80
-    spacing = 140 if long_form else 110
+    col_w = 420
+    header_h = 110
+    bullet_h = 110 if long_form else 86
+    bullet_gap = 14
+    body_h = len(bullets) * (bullet_h + bullet_gap)
+    footer_h = 92 if source_url else 42
+    frame_h = header_h + body_h + footer_h + 48
 
-    # 1 — Title geo (teal/green, solid)
+    frame_id = _make_shape_id("res_frame")
+    await broadcast_fn({
+        "type": "create_frame",
+        "payload": {
+            "id": frame_id,
+            "x": bx,
+            "y": by,
+            "w": col_w,
+            "h": frame_h,
+            "label": "Research Brief",
+        }
+    })
+    await asyncio.sleep(0.06)
+
+    # Masthead and headline
+    masthead_id = _make_shape_id("res_masthead")
+    await broadcast_fn({
+        "type": "add_text",
+        "payload": {
+            "id": masthead_id,
+            "x": bx + 18,
+            "y": by + 10,
+            "text": "RESEARCH DESK",
+            "size": "s",
+            "color": "grey",
+        }
+    })
+    await asyncio.sleep(0.04)
+
+    headline_id = _make_shape_id("res_headline")
     await broadcast_fn({
         "type": "add_geo",
         "payload": {
-            "id": title_id,
-            "x": bx,
-            "y": by,
-            "w": title_w,
-            "h": title_h,
+            "id": headline_id,
+            "x": bx + 14,
+            "y": by + 30,
+            "w": col_w - 28,
+            "h": 64,
             "text": title,
-            "color": "blue",
+            "color": "black",
+            "fill": "none",
+            "geo": "rectangle",
+        }
+    })
+    await asyncio.sleep(0.06)
+
+    divider_id = _make_shape_id("res_divider")
+    await broadcast_fn({
+        "type": "add_geo",
+        "payload": {
+            "id": divider_id,
+            "x": bx + 18,
+            "y": by + 98,
+            "w": col_w - 36,
+            "h": 4,
+            "text": "",
+            "color": "grey",
             "fill": "solid",
             "geo": "rectangle",
         }
     })
+    await asyncio.sleep(0.05)
 
-    await asyncio.sleep(0.15)
-
-    # 2 — Bullets fanned to the right
-    start_y = by - ((len(bullets) - 1) * spacing) // 2
-
+    # Column body: each bullet as a short article block
     for i, bullet in enumerate(bullets):
-        bid = _make_shape_id(f"res_bullet_{i}")
-        bul_x = bx + title_w + 120
-        bul_y = start_y + i * spacing
-
-        if long_form:
-            await broadcast_fn({
-                "type": "add_text",
-                "payload": {
-                    "id": bid, "x": bul_x, "y": bul_y,
-                    "text": bullet, "size": "s", "color": "black",
-                }
-            })
-        else:
-            await broadcast_fn({
-                "type": "add_note",
-                "payload": {
-                    "id": bid, "x": bul_x, "y": bul_y,
-                    "text": bullet, "color": "blue",
-                }
-            })
-        await asyncio.sleep(0.1)
-
-        arrow_id = _make_shape_id(f"res_arrow_{i}")
+        block_id = _make_shape_id(f"res_col_{i}")
+        block_y = by + 114 + i * (bullet_h + bullet_gap)
+        prefix = f"{i + 1:02d}. "
         await broadcast_fn({
-            "type": "add_arrow",
+            "type": "add_geo",
             "payload": {
-                "id": arrow_id,
-                "x1": bx + title_w, "y1": by + title_h // 2,
-                "x2": bul_x, "y2": bul_y + (20 if long_form else 60),
+                "id": block_id,
+                "x": bx + 18,
+                "y": block_y,
+                "w": col_w - 36,
+                "h": bullet_h,
+                "text": prefix + bullet,
+                "color": "blue",
+                "fill": "none",
+                "geo": "rectangle",
             }
         })
         await asyncio.sleep(0.08)
 
-    # 3 — Source bookmark below title (if available)
-    if source_url:
-        bm_id = _make_shape_id("res_source")
-        await broadcast_fn({
-            "type": "add_bookmark",
-            "payload": {
-                "id": bm_id,
-                "x": bx,
-                "y": by + title_h + 20,
-                "url": source_url,
-            }
-        })
-        await asyncio.sleep(0.1)
-
-    # 4 — Agent attribution stamp
-    stamp_id = _make_shape_id("res_stamp")
+    # Source strip and bookmark
+    footer_y = by + 120 + body_h + 10
+    source_strip_id = _make_shape_id("res_source_strip")
+    source_label_text = source_label or "Source"
     await broadcast_fn({
         "type": "add_text",
         "payload": {
-            "id": stamp_id,
-            "x": bx,
-            "y": by - 28,
-            "text": "ResearchAgent" + (" · long form" if long_form else ""),
+            "id": source_strip_id,
+            "x": bx + 18,
+            "y": footer_y,
+            "text": f"{source_label_text} · fact-checked",
             "size": "s",
             "color": "green",
         }
     })
     await asyncio.sleep(0.05)
 
-    # 5 — Zoom to fit
+    if source_url:
+        bm_id = _make_shape_id("res_source")
+        await broadcast_fn({
+            "type": "add_bookmark",
+            "payload": {
+                "id": bm_id,
+                "x": bx + 18,
+                "y": footer_y + 22,
+                "url": source_url,
+            }
+        })
+        await asyncio.sleep(0.1)
+
+    # Attribution stamp
+    stamp_id = _make_shape_id("res_stamp")
+    await broadcast_fn({
+        "type": "add_text",
+        "payload": {
+            "id": stamp_id,
+            "x": bx + col_w - 180,
+            "y": by + frame_h - 30,
+            "text": "ResearchAgent" + (" · long form" if long_form else " · brief"),
+            "size": "s",
+            "color": "grey",
+        }
+    })
+    await asyncio.sleep(0.05)
+
+    # Zoom to fit
     await broadcast_fn({"type": "zoom_to_fit", "payload": {}})
-    print(f"[ResearchAgent] Cluster placed — '{title}' with {len(bullets)} bullets ({'long' if long_form else 'short'} form)")
+    print(f"[ResearchAgent] Newspaper column placed — '{title}' with {len(bullets)} items ({'long' if long_form else 'short'} form)")
 
 
 # ── Core research logic ───────────────────────────────────────────────────────
@@ -275,4 +325,5 @@ async def run_research(payload: dict, broadcast_fn) -> None:
         print(f"[ResearchAgent] Error: {e}")
         import traceback
         traceback.print_exc()
+        await emit_failure_note(broadcast_fn, "ResearchAgent", e)
 

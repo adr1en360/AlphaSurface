@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react"
 import { Tldraw, useEditor, toRichText, getSnapshot, loadSnapshot, AssetRecordType, createShapeId } from "tldraw"
-import { Settings, Save, FolderOpen, FileUp } from "lucide-react"
+import { Settings, Save, FolderOpen, FileUp, FileDown } from "lucide-react"
+import { jsPDF } from "jspdf"
 import "tldraw/tldraw.css"
 
 // ── Audio playback singleton ──────────────────────────────────────────────────
@@ -578,6 +579,51 @@ function AlphaSurfaceInner({ config }) {
     input.click()
   }
 
+  const handleExportPdf = async () => {
+    const shapeIds = [...editor.getCurrentPageShapeIds()]
+    if (shapeIds.length === 0) {
+      console.warn("[AlphaSurface] Export skipped: canvas is empty")
+      return
+    }
+
+    try {
+      const { blob } = await editor.toImage(shapeIds, {
+        format: "png",
+        background: true,
+        padding: 32,
+      })
+
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onloadend = () => resolve(reader.result)
+        reader.onerror = reject
+        reader.readAsDataURL(blob)
+      })
+
+      const img = new Image()
+      await new Promise((resolve, reject) => {
+        img.onload = resolve
+        img.onerror = reject
+        img.src = dataUrl
+      })
+
+      const orientation = img.width >= img.height ? "landscape" : "portrait"
+      const pdf = new jsPDF({ orientation, unit: "pt", format: "a4" })
+      const pageW = pdf.internal.pageSize.getWidth()
+      const pageH = pdf.internal.pageSize.getHeight()
+      const scale = Math.min(pageW / img.width, pageH / img.height)
+      const drawW = img.width * scale
+      const drawH = img.height * scale
+      const x = (pageW - drawW) / 2
+      const y = (pageH - drawH) / 2
+
+      pdf.addImage(dataUrl, "PNG", x, y, drawW, drawH, undefined, "FAST")
+      pdf.save("alphasurface-export.pdf")
+    } catch (err) {
+      console.error("[AlphaSurface] PDF export failed", err)
+    }
+  }
+
   const handleUploadClick = () => {
     const input = Object.assign(document.createElement("input"), { type: "file", accept: ".pdf,.doc,.docx,.txt" })
     input.onchange = async (e) => {
@@ -708,6 +754,7 @@ function AlphaSurfaceInner({ config }) {
         {[
           ["Save", handleSave, Save], 
           ["Load", handleLoad, FolderOpen], 
+          ["Export PDF", handleExportPdf, FileDown],
           ["Upload Doc", handleUploadClick, FileUp]
         ].map(([label, fn, Icon]) => (
           <button key={label} onClick={fn} style={{
