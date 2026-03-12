@@ -17,7 +17,13 @@ const _playback = {
 }
 
 function flushAudioPlayback() {
-  for (const s of _playback.sources) { try { s.stop() } catch (_) {} }
+  for (const s of _playback.sources) {
+    try {
+      s.stop()
+    } catch {
+      // Ignore sources that have already ended.
+    }
+  }
   _playback.sources = []
   _playback.nextTime = 0
 }
@@ -305,6 +311,22 @@ function AlphaSurfaceInner({ config }) {
   const wsRef = useRef(null)
   const prevShapeCount = useRef(0)
   const mutedRef = useRef(false)
+  const lastInterruptAtRef = useRef(0)
+  const configRef = useRef(config)
+  const provocFreqRef = useRef(provocFreq)
+  const provocStyleRef = useRef(provocStyle)
+
+  useEffect(() => {
+    configRef.current = config
+  }, [config])
+
+  useEffect(() => {
+    provocFreqRef.current = provocFreq
+  }, [provocFreq])
+
+  useEffect(() => {
+    provocStyleRef.current = provocStyle
+  }, [provocStyle])
 
   const updateBackendConfig = (newFreq, newStyle) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -342,14 +364,14 @@ function AlphaSurfaceInner({ config }) {
         socket.send(JSON.stringify({
           type: "set_config",
           payload: { 
-            mode: config.mode, 
-            webSearch: config.webSearch, 
-            mcps: config.mcps,
-            goal: config.goal,
-            audience: config.audience,
-            uploadedFile: config.uploadedFile,
-            provocationFrequency: provocFreq,
-            provocationStyle: provocStyle
+            mode: configRef.current.mode, 
+            webSearch: configRef.current.webSearch, 
+            mcps: configRef.current.mcps,
+            goal: configRef.current.goal,
+            audience: configRef.current.audience,
+            uploadedFile: configRef.current.uploadedFile,
+            provocationFrequency: provocFreqRef.current,
+            provocationStyle: provocStyleRef.current
           }
         }))
       }
@@ -358,7 +380,15 @@ function AlphaSurfaceInner({ config }) {
         if (disposed) return
         const message = JSON.parse(event.data)
         if (message.type === "ai_status") { setAiStatus(message.payload?.status ?? "idle"); return }
-        if (message.type === "ai_interrupted") { flushAudioPlayback(); setAiStatus("idle"); return }
+        if (message.type === "ai_interrupted") {
+          const now = Date.now()
+          if (now - lastInterruptAtRef.current > 250) {
+            lastInterruptAtRef.current = now
+            flushAudioPlayback()
+            setAiStatus("idle")
+          }
+          return
+        }
         if (message.type !== "canvas_snapshot" && message.type !== "config_ack") {
           setIndicator(true)
           setTimeout(() => setIndicator(false), 1200)
@@ -546,7 +576,9 @@ function AlphaSurfaceInner({ config }) {
           ws.send(JSON.stringify({ type: "canvas_image", payload: { data: reader.result.split(",")[1], mime: "image/jpeg" } }))
         }
         reader.readAsDataURL(blob)
-      } catch (_) {}
+      } catch (err) {
+        console.warn("[AlphaSurface] Canvas capture failed", err)
+      }
     }
 
     // Send every 12s
@@ -752,12 +784,14 @@ function AlphaSurfaceInner({ config }) {
         fontFamily: "'Inter','Segoe UI',sans-serif",
       }}>
         {[
-          ["Save", handleSave, Save], 
-          ["Load", handleLoad, FolderOpen], 
-          ["Export PDF", handleExportPdf, FileDown],
-          ["Upload Doc", handleUploadClick, FileUp]
-        ].map(([label, fn, Icon]) => (
-          <button key={label} onClick={fn} style={{
+          { label: "Save", onClick: handleSave, icon: Save },
+          { label: "Load", onClick: handleLoad, icon: FolderOpen },
+          { label: "Export PDF", onClick: handleExportPdf, icon: FileDown },
+          { label: "Upload Doc", onClick: handleUploadClick, icon: FileUp },
+        ].map((action) => {
+          const IconComponent = action.icon
+          return (
+          <button key={action.label} onClick={action.onClick} style={{
             padding: "12px", borderRadius: 14,
             background: "rgba(15, 23, 42, 0.6)", backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
             color: "#94a3b8", border: "1px solid rgba(255,255,255,0.1)",
@@ -788,7 +822,7 @@ function AlphaSurfaceInner({ config }) {
                tooltip.style.transform = "translateX(-5px)";
             }
           }}>
-            <Icon size={20} strokeWidth={2} />
+            <IconComponent size={20} strokeWidth={2} />
             <div className="btn-tooltip" style={{
               position: "absolute", left: "100%", marginLeft: "14px",
               background: "rgba(15, 23, 42, 0.95)", backdropFilter: "blur(8px)",
@@ -799,10 +833,11 @@ function AlphaSurfaceInner({ config }) {
               transition: "all 0.2s cubic-bezier(0.16, 1, 0.3, 1)", whiteSpace: "nowrap",
               boxShadow: "0 4px 12px rgba(0,0,0,0.3)"
             }}>
-              {label}
+              {action.label}
             </div>
           </button>
-        ))}
+          )
+        })}
 
         <div style={{ width: "24px", height: "1px", background: "rgba(255,255,255,0.1)", margin: "4px auto" }} />
 
@@ -933,7 +968,7 @@ export default function App() {
     if (saved) {
       try {
         return JSON.parse(saved)
-      } catch (e) {
+      } catch {
         return null
       }
     }

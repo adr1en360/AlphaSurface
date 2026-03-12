@@ -17,6 +17,7 @@ Run:
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
 from contextlib import asynccontextmanager
@@ -34,6 +35,8 @@ from dispatcher import run_dispatcher, register_handler
 from agent_tasks import dispatch
 from memory import memory_store
 
+_dotenv_path = os.path.join(os.path.dirname(__file__), ".env")
+load_dotenv(dotenv_path=_dotenv_path)
 load_dotenv()
 
 # ── WebSocket registry ────────────────────────────────────────────────────────
@@ -62,6 +65,21 @@ async def broadcast(message: dict):
     for ws in dead:
         if ws in connected_clients:
             connected_clients.remove(ws)
+
+
+async def drain_canvas_actions():
+    while True:
+        try:
+            action = canvas_tools.canvas_action_queue.get_nowait()
+            print(f"[App] Canvas action: {action['type']}")
+            await broadcast(action)
+        except asyncio.QueueEmpty:
+            await asyncio.sleep(0.02)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[App] Canvas action drain error: {e}")
+            await asyncio.sleep(0.1)
 
 
 # ── Agent + EventBus singletons ───────────────────────────────────────────────
@@ -112,7 +130,8 @@ async def lifespan(app: FastAPI):
     persona_agent.start()
 
     # Start agent dispatcher (routes tasks from queue to sub-agents)
-    asyncio.create_task(run_dispatcher())
+    dispatcher_task = asyncio.create_task(run_dispatcher())
+    canvas_action_task = asyncio.create_task(drain_canvas_actions())
 
     # Register provocation as a dispatched handler so Live Agent can also trigger it
     async def _provocation_handler(payload: dict):
@@ -149,15 +168,18 @@ async def lifespan(app: FastAPI):
         await _run_subagent("document", payload, run_document)
     register_handler("document", _document_handler)
 
-    # Start live agent
-    asyncio.create_task(agent.start())
-
     yield
 
     # Shutdown
     bus.stop()
     persona_agent.stop()
     await agent.stop()
+    dispatcher_task.cancel()
+    canvas_action_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await dispatcher_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await canvas_action_task
 
 
 app = FastAPI(lifespan=lifespan)
@@ -307,7 +329,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     except Exception as e:
                         print(f"[WS] Failed to dispatch document agent: {e}")
 
-                agent.reconfigure(mode=mode, web_search=web_search)
+                await agent.reconfigure(mode=mode, web_search=web_search)
                 print(f"[WS] Config updated: mode={mode} web_search={web_search}")
                 await websocket.send_text(json.dumps({
                     "type": "config_ack",
@@ -338,6 +360,8 @@ async def websocket_endpoint(websocket: WebSocket):
         if websocket in connected_clients:
             connected_clients.remove(websocket)
         print(f"[WS] Client disconnected ({len(connected_clients)} remaining)")
+        if not connected_clients:
+            await agent.stop_session()
     except Exception as e:
         print(f"[WS] Error: {e}")
         if websocket in connected_clients:

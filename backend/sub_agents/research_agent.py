@@ -88,40 +88,23 @@ async def _place_cluster(broadcast_fn, title: str, bullets: list[str],
                           source_url: str | None, source_label: str | None,
                           long_form: bool = False):
     """
-    Broadcast canvas actions in a newspaper-column layout.
+    Broadcast canvas actions in a newspaper-column layout (no frame — avoids overlap).
+    Shapes are placed as free-floating elements in a clean vertical column.
     """
     bx, by = _canvas_pos()
 
-    col_w = 420
-    header_h = 110
-    bullet_h = 110 if long_form else 86
-    bullet_gap = 14
-    body_h = len(bullets) * (bullet_h + bullet_gap)
-    footer_h = 92 if source_url else 42
-    frame_h = header_h + body_h + footer_h + 48
+    col_w = 480
+    # Larger bullet boxes so text has room to breathe
+    bullet_h = 150 if long_form else 110
+    bullet_gap = 16
 
-    frame_id = _make_shape_id("res_frame")
-    await broadcast_fn({
-        "type": "create_frame",
-        "payload": {
-            "id": frame_id,
-            "x": bx,
-            "y": by,
-            "w": col_w,
-            "h": frame_h,
-            "label": "Research Brief",
-        }
-    })
-    await asyncio.sleep(0.06)
-
-    # Masthead and headline
-    masthead_id = _make_shape_id("res_masthead")
+    # ── Masthead ──────────────────────────────────────────────────────────────
     await broadcast_fn({
         "type": "add_text",
         "payload": {
-            "id": masthead_id,
-            "x": bx + 18,
-            "y": by + 10,
+            "id": _make_shape_id("res_masthead"),
+            "x": bx,
+            "y": by,
             "text": "RESEARCH DESK",
             "size": "s",
             "color": "grey",
@@ -129,15 +112,15 @@ async def _place_cluster(broadcast_fn, title: str, bullets: list[str],
     })
     await asyncio.sleep(0.04)
 
-    headline_id = _make_shape_id("res_headline")
+    # ── Headline box ──────────────────────────────────────────────────────────
     await broadcast_fn({
         "type": "add_geo",
         "payload": {
-            "id": headline_id,
-            "x": bx + 14,
-            "y": by + 30,
-            "w": col_w - 28,
-            "h": 64,
+            "id": _make_shape_id("res_headline"),
+            "x": bx,
+            "y": by + 24,
+            "w": col_w,
+            "h": 70,
             "text": title,
             "color": "black",
             "fill": "none",
@@ -146,37 +129,36 @@ async def _place_cluster(broadcast_fn, title: str, bullets: list[str],
     })
     await asyncio.sleep(0.06)
 
-    divider_id = _make_shape_id("res_divider")
+    # ── Thin divider ──────────────────────────────────────────────────────────
     await broadcast_fn({
         "type": "add_geo",
         "payload": {
-            "id": divider_id,
-            "x": bx + 18,
+            "id": _make_shape_id("res_divider"),
+            "x": bx,
             "y": by + 98,
-            "w": col_w - 36,
-            "h": 4,
+            "w": col_w,
+            "h": 3,
             "text": "",
             "color": "grey",
             "fill": "solid",
             "geo": "rectangle",
         }
     })
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.04)
 
-    # Column body: each bullet as a short article block
+    # ── Numbered bullet blocks ────────────────────────────────────────────────
+    body_start_y = by + 108
     for i, bullet in enumerate(bullets):
-        block_id = _make_shape_id(f"res_col_{i}")
-        block_y = by + 114 + i * (bullet_h + bullet_gap)
-        prefix = f"{i + 1:02d}. "
+        block_y = body_start_y + i * (bullet_h + bullet_gap)
         await broadcast_fn({
             "type": "add_geo",
             "payload": {
-                "id": block_id,
-                "x": bx + 18,
+                "id": _make_shape_id(f"res_col_{i}"),
+                "x": bx,
                 "y": block_y,
-                "w": col_w - 36,
+                "w": col_w,
                 "h": bullet_h,
-                "text": prefix + bullet,
+                "text": f"{i + 1:02d}.  {bullet}",
                 "color": "blue",
                 "fill": "none",
                 "geo": "rectangle",
@@ -184,44 +166,41 @@ async def _place_cluster(broadcast_fn, title: str, bullets: list[str],
         })
         await asyncio.sleep(0.08)
 
-    # Source strip and bookmark
-    footer_y = by + 120 + body_h + 10
-    source_strip_id = _make_shape_id("res_source_strip")
+    # ── Source footer ─────────────────────────────────────────────────────────
+    footer_y = body_start_y + len(bullets) * (bullet_h + bullet_gap) + 12
     source_label_text = source_label or "Source"
     await broadcast_fn({
         "type": "add_text",
         "payload": {
-            "id": source_strip_id,
-            "x": bx + 18,
+            "id": _make_shape_id("res_source_strip"),
+            "x": bx,
             "y": footer_y,
             "text": f"{source_label_text} · fact-checked",
             "size": "s",
             "color": "green",
         }
     })
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.04)
 
     if source_url:
-        bm_id = _make_shape_id("res_source")
         await broadcast_fn({
             "type": "add_bookmark",
             "payload": {
-                "id": bm_id,
-                "x": bx + 18,
+                "id": _make_shape_id("res_source"),
+                "x": bx,
                 "y": footer_y + 22,
                 "url": source_url,
             }
         })
         await asyncio.sleep(0.1)
 
-    # Attribution stamp
-    stamp_id = _make_shape_id("res_stamp")
+    # ── Attribution ───────────────────────────────────────────────────────────
     await broadcast_fn({
         "type": "add_text",
         "payload": {
-            "id": stamp_id,
+            "id": _make_shape_id("res_stamp"),
             "x": bx + col_w - 180,
-            "y": by + frame_h - 30,
+            "y": footer_y + (120 if source_url else 20),
             "text": "ResearchAgent" + (" · long form" if long_form else " · brief"),
             "size": "s",
             "color": "grey",
@@ -229,7 +208,6 @@ async def _place_cluster(broadcast_fn, title: str, bullets: list[str],
     })
     await asyncio.sleep(0.05)
 
-    # Zoom to fit
     await broadcast_fn({"type": "zoom_to_fit", "payload": {}})
     print(f"[ResearchAgent] Newspaper column placed — '{title}' with {len(bullets)} items ({'long' if long_form else 'short'} form)")
 
