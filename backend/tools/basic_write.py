@@ -1,6 +1,70 @@
 from .state import canvas_state, canvas_action_queue
 from memory import memory_store
 
+_VALID_GEO = {
+    "cloud", "rectangle", "ellipse", "triangle", "diamond", "pentagon",
+    "hexagon", "octagon", "star", "rhombus", "rhombus-2", "oval",
+    "trapezoid", "arrow-right", "arrow-left", "arrow-up", "arrow-down",
+    "x-box", "check-box", "heart",
+}
+
+_GEO_ALIASES = {
+    "rounded_rectangle": "rectangle",
+    "rounded-rectangle": "rectangle",
+    "rounded rect": "rectangle",
+    "roundedrect": "rectangle",
+    "roundedrectangle": "rectangle",
+    "rect": "rectangle",
+    "box": "rectangle",
+    "circle": "ellipse",
+}
+
+_VALID_FILL = {"none", "semi", "solid", "pattern", "fill", "lined-fill"}
+
+_VALID_COLORS = {
+    "black", "grey", "light-violet", "violet", "blue", "light-blue",
+    "yellow", "orange", "green", "light-green", "light-red", "red", "white",
+}
+
+_COLOR_ALIASES = {
+    "gray": "grey",
+    "purple": "violet",
+    "light_purple": "light-violet",
+    "light-purple": "light-violet",
+    "light violet": "light-violet",
+    "light_blue": "light-blue",
+    "light blue": "light-blue",
+    "light_green": "light-green",
+    "light green": "light-green",
+    "light_red": "light-red",
+    "light red": "light-red",
+}
+
+_FILL_ALIASES = {
+    "filled": "solid",
+    "outline": "none",
+    "transparent": "none",
+    "half": "semi",
+}
+
+
+def _normalize_geo(geo: str) -> str:
+    g = (geo or "rectangle").strip().lower().replace("_", "-")
+    g = _GEO_ALIASES.get(g, _GEO_ALIASES.get(g.replace("-", ""), g))
+    return g if g in _VALID_GEO else "rectangle"
+
+
+def _normalize_fill(fill: str) -> str:
+    f = (fill or "semi").strip().lower().replace("_", "-")
+    f = _FILL_ALIASES.get(f, f)
+    return f if f in _VALID_FILL else "semi"
+
+
+def _normalize_color(color: str, default: str) -> str:
+    c = (color or default).strip().lower().replace("_", "-")
+    c = _COLOR_ALIASES.get(c, c)
+    return c if c in _VALID_COLORS else default
+
 def list_canvas_shapes() -> dict:
     return {
         "shape_count": canvas_state["shape_count"],
@@ -60,10 +124,11 @@ def memory_write(user_id: str, key: str, value: str) -> str:
 def add_text_to_canvas(text: str, x: int, y: int, color: str, size: str) -> str:
     if size not in ["s", "m", "l", "xl"]:
         size = "m"
+    normalized_color = _normalize_color(color, "black")
     canvas_action_queue.put_nowait({
         "type": "add_text",
         "payload": {"text": text, "x": x, "y": y,
-                    "color": color or "black", "size": size}
+                    "color": normalized_color, "size": size}
     })
     return f"Text placed at ({x},{y})"
 
@@ -71,43 +136,49 @@ def add_text_to_canvas(text: str, x: int, y: int, color: str, size: str) -> str:
 def add_note_to_canvas(text: str, x: int, y: int, color: str, size: str) -> str:
     if size not in ["s", "m", "l", "xl"]:
         size = "m"
+    normalized_color = _normalize_color(color, "yellow")
     canvas_action_queue.put_nowait({
         "type": "add_note",
         "payload": {"text": text, "x": x, "y": y,
-                    "color": color or "yellow", "size": size}
+                    "color": normalized_color, "size": size}
     })
     return f"Note placed at ({x},{y})"
 
 
 def add_geo_to_canvas(text: str, geo: str, x: int, y: int,
                       w: int, h: int, color: str, fill: str) -> str:
+    normalized_geo = _normalize_geo(geo)
+    normalized_fill = _normalize_fill(fill)
+    normalized_color = _normalize_color(color, "blue")
     canvas_action_queue.put_nowait({
         "type": "add_geo",
         "payload": {
-            "text": text, "geo": geo or "rectangle",
+            "text": text, "geo": normalized_geo,
             "x": x, "y": y, "w": w or 200, "h": h or 120,
-            "color": color or "blue", "fill": fill or "semi"
+            "color": normalized_color, "fill": normalized_fill
         }
     })
-    return f"{geo} at ({x},{y})"
+    return f"{normalized_geo} at ({x},{y})"
 
 
 def add_arrow_to_canvas(x1: int, y1: int, x2: int, y2: int,
                         label: str, color: str) -> str:
+    normalized_color = _normalize_color(color, "black")
     canvas_action_queue.put_nowait({
         "type": "add_arrow",
         "payload": {"x1": x1, "y1": y1, "x2": x2, "y2": y2,
-                    "label": label or "", "color": color or "black"}
+                    "label": label or "", "color": normalized_color}
     })
     return f"Arrow ({x1},{y1})→({x2},{y2})"
 
 
 def bind_arrow(from_shape_id: str, to_shape_id: str,
                label: str, color: str) -> str:
+    normalized_color = _normalize_color(color, "black")
     canvas_action_queue.put_nowait({
         "type": "bind_arrow",
         "payload": {"fromShapeId": from_shape_id, "toShapeId": to_shape_id,
-                    "label": label or "", "color": color or "black"}
+                    "label": label or "", "color": normalized_color}
     })
     return f"Bound arrow {from_shape_id}→{to_shape_id}"
 
@@ -141,7 +212,7 @@ def update_shape(shape_id: str, text: str, color: str) -> str:
     if text:
         payload["text"] = text
     if color:
-        payload["color"] = color
+        payload["color"] = _normalize_color(color, "black")
     canvas_action_queue.put_nowait({"type": "update_shape", "payload": payload})
     return f"Updated {shape_id}"
 

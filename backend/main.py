@@ -242,7 +242,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if goal and isinstance(goal, str) and goal.strip():
                     try:
                         mem = memory_store()
-                        await mem.write("user", "current_focus", goal.strip())
+                        await mem.merge("user", {"current_focus": goal.strip()})
                         print(f"[WS] Saved user goal to memory: {goal.strip()}")
                     except Exception as e:
                         print(f"[WS] Failed to save goal to memory: {e}")
@@ -251,7 +251,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if audience and isinstance(audience, str) and audience.strip():
                     try:
                         mem = memory_store()
-                        await mem.write("user", "audience", audience.strip())
+                        await mem.merge("user", {"audience": audience.strip()})
                         print(f"[WS] Saved audience to memory: {audience.strip()}")
                     except Exception as e:
                         print(f"[WS] Failed to save audience to memory: {e}")
@@ -260,10 +260,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 if provoc_freq or provoc_style:
                     try:
                         mem = memory_store()
+                        updates = {}
                         if provoc_freq:
-                            await mem.write("user", "provocation_frequency", provoc_freq)
+                            updates["provocation_frequency"] = provoc_freq
                         if provoc_style:
-                            await mem.write("user", "provocation_style", provoc_style)
+                            updates["provocation_style"] = provoc_style
+                        if updates:
+                            await mem.merge("user", updates)
                         print(f"[WS] Saved provocation settings to memory: Freq={provoc_freq}, Style={provoc_style}")
                     except Exception as e:
                         print(f"[WS] Failed to save provocation settings: {e}")

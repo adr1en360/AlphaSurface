@@ -1,5 +1,30 @@
 from .state import canvas_state, canvas_action_queue
 
+_VALID_COLORS = {
+    "black", "grey", "light-violet", "violet", "blue", "light-blue",
+    "yellow", "orange", "green", "light-green", "light-red", "red", "white",
+}
+
+_COLOR_ALIASES = {
+    "gray": "grey",
+    "purple": "violet",
+    "light_purple": "light-violet",
+    "light-purple": "light-violet",
+    "light violet": "light-violet",
+    "light_blue": "light-blue",
+    "light blue": "light-blue",
+    "light_green": "light-green",
+    "light green": "light-green",
+    "light_red": "light-red",
+    "light red": "light-red",
+}
+
+
+def _normalize_color(color: str, default: str) -> str:
+    c = (color or default).strip().lower().replace("_", "-")
+    c = _COLOR_ALIASES.get(c, c)
+    return c if c in _VALID_COLORS else default
+
 def place_near(
     anchor_shape_id: str,
     text: str,
@@ -43,23 +68,26 @@ def place_near(
     nx, ny = int(nx), int(ny)
 
     if shape_type == "note":
+        normalized_color = _normalize_color(color, "yellow")
         canvas_action_queue.put_nowait({
             "type": "add_note",
             "payload": {"text": text, "x": nx, "y": ny,
-                        "color": color or "yellow", "size": "m"}
+                        "color": normalized_color, "size": "m"}
         })
     elif shape_type == "geo":
+        normalized_color = _normalize_color(color, "blue")
         canvas_action_queue.put_nowait({
             "type": "add_geo",
             "payload": {"text": text, "geo": "rectangle",
                         "x": nx, "y": ny, "w": NEW_W, "h": NEW_H,
-                        "color": color or "blue", "fill": "semi"}
+                        "color": normalized_color, "fill": "semi"}
         })
     else:
+        normalized_color = _normalize_color(color, "black")
         canvas_action_queue.put_nowait({
             "type": "add_text",
             "payload": {"text": text, "x": nx, "y": ny,
-                        "color": color or "black", "size": "m"}
+                        "color": normalized_color, "size": "m"}
         })
 
     return f"Placed {shape_type} {direction} of {anchor_shape_id} at ({nx},{ny})"
@@ -114,23 +142,26 @@ def place_in_empty_space(
     final_x, final_y = int(final_x), int(final_y)
 
     if shape_type == "note":
+        normalized_color = _normalize_color(color, "yellow")
         canvas_action_queue.put_nowait({
             "type": "add_note",
             "payload": {"text": text, "x": final_x, "y": final_y,
-                        "color": color or "yellow", "size": "m"}
+                        "color": normalized_color, "size": "m"}
         })
     elif shape_type == "geo":
+        normalized_color = _normalize_color(color, "blue")
         canvas_action_queue.put_nowait({
             "type": "add_geo",
             "payload": {"text": text, "geo": "rectangle",
                         "x": final_x, "y": final_y, "w": 220, "h": 120,
-                        "color": color or "blue", "fill": "semi"}
+                        "color": normalized_color, "fill": "semi"}
         })
     else:
+        normalized_color = _normalize_color(color, "black")
         canvas_action_queue.put_nowait({
             "type": "add_text",
             "payload": {"text": text, "x": final_x, "y": final_y,
-                        "color": color or "black", "size": "m"}
+                        "color": normalized_color, "size": "m"}
         })
 
     return f"Placed {shape_type} at ({final_x},{final_y}) — empty space found"
