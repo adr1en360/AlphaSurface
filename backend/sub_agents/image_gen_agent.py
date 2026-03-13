@@ -150,6 +150,9 @@ async def run_image_gen(payload: dict, broadcast_fn) -> None:
 
     except Exception as e:
         print(f"[ImageGenAgent] Error: {e}")
-        import traceback
-        traceback.print_exc()
+        msg = str(e)
+        is_rate_limited = "429" in msg or "RESOURCE_EXHAUSTED" in msg
+        if not is_rate_limited:
+            import traceback
+            traceback.print_exc()
         await emit_failure_note(broadcast_fn, "ImageGenAgent", e)

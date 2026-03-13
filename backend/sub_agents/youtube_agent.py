@@ -12,13 +12,13 @@ Requires: YOUTUBE_API_KEY in .env
 
 import asyncio
 import os
-import random
 import re
 from typing import Optional
 
 from googleapiclient.discovery import build
 from google.genai import Client
 from sub_agents import emit_failure_note
+from tools.state import canvas_state
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -172,7 +172,7 @@ async def _search_youtube(query: str) -> list[dict]:
                 "duration_label": _format_duration(duration_secs),
             })
 
-        return videos[:3]  # at most 3 on canvas
+        return videos
 
     except Exception as e:
         print(f"[YouTubeAgent] YouTube API error: {e}")
@@ -183,8 +183,50 @@ async def _search_youtube(query: str) -> list[dict]:
 
 # ── Canvas placement ──────────────────────────────────────────────────────────
 
-def _canvas_pos():
-    return random.randint(-700, 100), random.randint(-400, 200)
+def _find_empty_video_origin(stack_w: int, stack_h: int) -> tuple[int, int]:
+    vp = canvas_state.get("viewport", {"x": 0, "y": 0, "w": 1200, "h": 800})
+    shapes = canvas_state.get("shapes", [])
+
+    cx = int(vp["x"] + vp["w"] * 0.62)
+    cy = int(vp["y"] + vp["h"] * 0.08)
+
+    def overlaps(px: int, py: int) -> bool:
+        pad = 64
+        for s in shapes:
+            if not isinstance(s, dict):
+                continue
+            sx = int(s.get("x", 0))
+            sy = int(s.get("y", 0))
+            sw = int(s.get("w", 220))
+            sh = int(s.get("h", 120))
+            if (
+                px < sx + sw + pad
+                and px + stack_w > sx - pad
+                and py < sy + sh + pad
+                and py + stack_h > sy - pad
+            ):
+                return True
+        return False
+
+    if not overlaps(cx, cy):
+        return cx, cy
+
+    for ring in range(1, 10):
+        for dx, dy in [
+            (ring * 640, 0),
+            (0, ring * 360),
+            (-ring * 640, 0),
+            (0, -ring * 360),
+            (ring * 640, ring * 360),
+            (-ring * 640, ring * 360),
+            (ring * 640, -ring * 360),
+            (-ring * 640, -ring * 360),
+        ]:
+            tx, ty = cx + dx, cy + dy
+            if not overlaps(tx, ty):
+                return tx, ty
+
+    return cx + 740, cy + 420
 
 
 def _make_shape_id(prefix: str) -> str:
@@ -194,9 +236,10 @@ def _make_shape_id(prefix: str) -> str:
 
 async def _place_videos(broadcast_fn, query: str, videos: list[dict]):
     """Place each video as an iframe embed with a title label above it."""
-    bx, by = _canvas_pos()
     embed_w, embed_h = 560, 315
-    gap = 48
+    gap = 90
+    stack_h = len(videos) * (embed_h + gap) + 60
+    bx, by = _find_empty_video_origin(embed_w + 40, stack_h)
 
     # Label
     stamp_id = _make_shape_id("yt_stamp")
@@ -255,6 +298,34 @@ async def _place_videos(broadcast_fn, query: str, videos: list[dict]):
 async def run_youtube(payload: dict, broadcast_fn) -> None:
     """Main handler. Called by dispatcher with payload = {'query': str}."""
     query = payload.get("query", "").strip()
+    requested_count = payload.get("count", payload.get("max_results"))
+    if requested_count is None:
+        q = query.lower()
+        m = re.search(r"\b([1-5])\s*(?:video|videos)\b", q)
+        if m:
+            requested_count = int(m.group(1))
+        else:
+            word_to_num = {
+                "one": 1,
+                "two": 2,
+                "three": 3,
+                "four": 4,
+                "five": 5,
+                "a": 1,
+                "an": 1,
+                "single": 1,
+                "couple": 2,
+            }
+            word_match = re.search(
+                r"\b(one|two|three|four|five|a|an|single|couple)\s*(?:video|videos)\b",
+                q,
+            )
+            requested_count = word_to_num.get(word_match.group(1), 3) if word_match else 3
+    try:
+        requested_count = int(requested_count)
+    except Exception:
+        requested_count = 3
+    requested_count = max(1, min(requested_count, 5))
     if not query:
         print("[YouTubeAgent] Empty query — skipping")
         return
@@ -267,6 +338,7 @@ async def run_youtube(payload: dict, broadcast_fn) -> None:
 
         # 2. YouTube API returns real videos with duration metadata
         videos = await _search_youtube(search_query)
+        videos = videos[:requested_count]
 
         if not videos:
             print("[YouTubeAgent] No suitable videos found — skipping canvas placement.")

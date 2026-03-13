@@ -381,3 +381,7 @@ class AlphaSurfaceAgent:
             print(f"[Agent] Receive loop error: {exc}")
             import traceback
             traceback.print_exc()
+            self.running = False
+            self._ready.clear()
+            if self._live_queue is not None:
+                self._live_queue.close()

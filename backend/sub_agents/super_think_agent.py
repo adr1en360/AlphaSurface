@@ -202,6 +202,7 @@ def _extract_canvas_text(canvas_state: dict) -> str:
     """Pull all text from the canvas shapes into a flat summary."""
     shapes = canvas_state.get("shapes", [])
     lines = []
+    non_text_counts: dict[str, int] = {}
     for shape in shapes:
         if not isinstance(shape, dict):
             continue
@@ -209,7 +210,18 @@ def _extract_canvas_text(canvas_state: dict) -> str:
         if text:
             shape_type = shape.get("type", "shape")
             lines.append(f"[{shape_type}] {text}")
-    return "\n".join(lines) if lines else "(canvas is empty)"
+        else:
+            shape_type = shape.get("type", "shape")
+            non_text_counts[shape_type] = non_text_counts.get(shape_type, 0) + 1
+
+    if lines:
+        return "\n".join(lines)
+
+    if shapes:
+        summary = ", ".join(f"{k}:{v}" for k, v in sorted(non_text_counts.items()))
+        return f"(canvas has {len(shapes)} shapes with no readable text labels; types: {summary})"
+
+    return "(canvas is empty)"
 
 
 # ── Main handler ──────────────────────────────────────────────────────────────
@@ -257,6 +269,9 @@ async def run_super_think(payload: dict, broadcast_fn, canvas_state: dict) -> No
 
     except Exception as e:
         print(f"[SuperThink] Error: {e}")
-        import traceback
-        traceback.print_exc()
+        msg = str(e)
+        is_rate_limited = "429" in msg or "RESOURCE_EXHAUSTED" in msg
+        if not is_rate_limited:
+            import traceback
+            traceback.print_exc()
         await emit_failure_note(broadcast_fn, "SuperThinkAgent", e)

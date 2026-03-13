@@ -33,6 +33,7 @@ from google.genai import types
 
 from event_bus import get_event_bus
 from sub_agents import emit_failure_note
+from tools.state import canvas_state
 
 # ── Agent identity ───────────────────────────────────────────────────────────
 # Each agent stamps its output with a small attribution label on canvas.
@@ -79,6 +80,52 @@ def _canvas_pos():
     return base_x, base_y
 
 
+def _find_empty_column_origin(col_w: int, col_h: int) -> tuple[int, int]:
+    vp = canvas_state.get("viewport", {"x": 0, "y": 0, "w": 1200, "h": 800})
+    shapes = canvas_state.get("shapes", [])
+
+    cx = int(vp["x"] + vp["w"] * 0.15)
+    cy = int(vp["y"] + vp["h"] * 0.12)
+
+    def overlaps(px: int, py: int) -> bool:
+        pad = 48
+        for s in shapes:
+            if not isinstance(s, dict):
+                continue
+            sx = int(s.get("x", 0))
+            sy = int(s.get("y", 0))
+            sw = int(s.get("w", 220))
+            sh = int(s.get("h", 120))
+            if (
+                px < sx + sw + pad
+                and px + col_w > sx - pad
+                and py < sy + sh + pad
+                and py + col_h > sy - pad
+            ):
+                return True
+        return False
+
+    if not overlaps(cx, cy):
+        return cx, cy
+
+    for ring in range(1, 10):
+        for dx, dy in [
+            (ring * 520, 0),
+            (0, ring * 280),
+            (-ring * 520, 0),
+            (0, -ring * 280),
+            (ring * 520, ring * 280),
+            (-ring * 520, ring * 280),
+            (ring * 520, -ring * 280),
+            (-ring * 520, -ring * 280),
+        ]:
+            tx, ty = cx + dx, cy + dy
+            if not overlaps(tx, ty):
+                return tx, ty
+
+    return cx + 620, cy + 300
+
+
 def _make_shape_id(prefix: str) -> str:
     import uuid
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
@@ -91,12 +138,20 @@ async def _place_cluster(broadcast_fn, title: str, bullets: list[str],
     Broadcast canvas actions in a newspaper-column layout (no frame — avoids overlap).
     Shapes are placed as free-floating elements in a clean vertical column.
     """
-    bx, by = _canvas_pos()
-
     col_w = 480
-    # Larger bullet boxes so text has room to breathe
-    bullet_h = 150 if long_form else 110
+    base_bullet_h = 170 if long_form else 120
     bullet_gap = 16
+
+    # Dynamic heights prevent text overflow from visually colliding across blocks.
+    block_heights = []
+    for bullet in bullets:
+        extra_lines = min(6, max(0, len((bullet or "")) // 80))
+        block_heights.append(base_bullet_h + extra_lines * 20)
+
+    body_h = sum(block_heights) + max(0, len(block_heights) - 1) * bullet_gap
+    footer_h = 190 if source_url else 78
+    col_h = 108 + body_h + footer_h
+    bx, by = _find_empty_column_origin(col_w, col_h)
 
     # ── Masthead ──────────────────────────────────────────────────────────────
     await broadcast_fn({
@@ -148,16 +203,17 @@ async def _place_cluster(broadcast_fn, title: str, bullets: list[str],
 
     # ── Numbered bullet blocks ────────────────────────────────────────────────
     body_start_y = by + 108
+    cursor_y = body_start_y
     for i, bullet in enumerate(bullets):
-        block_y = body_start_y + i * (bullet_h + bullet_gap)
+        block_h = block_heights[i]
         await broadcast_fn({
             "type": "add_geo",
             "payload": {
                 "id": _make_shape_id(f"res_col_{i}"),
                 "x": bx,
-                "y": block_y,
+                "y": cursor_y,
                 "w": col_w,
-                "h": bullet_h,
+                "h": block_h,
                 "text": f"{i + 1:02d}.  {bullet}",
                 "color": "blue",
                 "fill": "none",
@@ -165,9 +221,10 @@ async def _place_cluster(broadcast_fn, title: str, bullets: list[str],
             }
         })
         await asyncio.sleep(0.08)
+        cursor_y += block_h + bullet_gap
 
     # ── Source footer ─────────────────────────────────────────────────────────
-    footer_y = body_start_y + len(bullets) * (bullet_h + bullet_gap) + 12
+    footer_y = cursor_y + 12
     source_label_text = source_label or "Source"
     await broadcast_fn({
         "type": "add_text",
@@ -301,7 +358,10 @@ async def run_research(payload: dict, broadcast_fn) -> None:
 
     except Exception as e:
         print(f"[ResearchAgent] Error: {e}")
-        import traceback
-        traceback.print_exc()
+        msg = str(e)
+        is_rate_limited = "429" in msg or "RESOURCE_EXHAUSTED" in msg
+        if not is_rate_limited:
+            import traceback
+            traceback.print_exc()
         await emit_failure_note(broadcast_fn, "ResearchAgent", e)
 

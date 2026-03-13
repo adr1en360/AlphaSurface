@@ -10,8 +10,14 @@ def dispatch_image_gen(prompt: str) -> str:
     return f"Image generation dispatched: {prompt}"
 
 
-def dispatch_youtube(query: str) -> str:
-    dispatch("youtube", {"query": query}, source="live_agent")
+def dispatch_youtube(query: str, count: int = 0) -> str:
+    payload = {"query": query}
+    if count > 0:
+        payload["count"] = count
+        payload["max_results"] = count
+    dispatch("youtube", payload, source="live_agent")
+    if count > 0:
+        return f"YouTube search dispatched: {query} ({count} video(s))"
     return f"YouTube search dispatched: {query}"
 
 
