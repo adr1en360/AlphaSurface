@@ -32,6 +32,7 @@ from google.adk.tools import google_search
 from google.genai import types
 
 from event_bus import get_event_bus
+from model_config import FAST_MODEL
 from sub_agents import emit_failure_note
 from tools.state import canvas_state
 
@@ -40,7 +41,7 @@ from tools.state import canvas_state
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-_MODEL = "gemini-2.5-flash"
+_MODEL = FAST_MODEL
 
 _SYSTEM_PROMPT = """\
 You are a research assistant. Your job is to search the web for information on a query
@@ -201,27 +202,26 @@ async def _place_cluster(broadcast_fn, title: str, bullets: list[str],
     })
     await asyncio.sleep(0.04)
 
-    # ── Numbered bullet blocks ────────────────────────────────────────────────
+    # ── Single body box with all bullets ─────────────────────────────────────
     body_start_y = by + 108
-    cursor_y = body_start_y
-    for i, bullet in enumerate(bullets):
-        block_h = block_heights[i]
-        await broadcast_fn({
-            "type": "add_geo",
-            "payload": {
-                "id": _make_shape_id(f"res_col_{i}"),
-                "x": bx,
-                "y": cursor_y,
-                "w": col_w,
-                "h": block_h,
-                "text": f"{i + 1:02d}.  {bullet}",
-                "color": "blue",
-                "fill": "none",
-                "geo": "rectangle",
-            }
-        })
-        await asyncio.sleep(0.08)
-        cursor_y += block_h + bullet_gap
+    body_text = "\n\n".join(f"{i + 1:02d}. {bullet}" for i, bullet in enumerate(bullets))
+    body_h = max(220, sum(block_heights) // max(1, len(block_heights)) * len(block_heights) // 2 + 140)
+    await broadcast_fn({
+        "type": "add_geo",
+        "payload": {
+            "id": _make_shape_id("res_body"),
+            "x": bx,
+            "y": body_start_y,
+            "w": col_w,
+            "h": body_h,
+            "text": body_text,
+            "color": "blue",
+            "fill": "none",
+            "geo": "rectangle",
+        }
+    })
+    await asyncio.sleep(0.1)
+    cursor_y = body_start_y + body_h
 
     # ── Source footer ─────────────────────────────────────────────────────────
     footer_y = cursor_y + 12

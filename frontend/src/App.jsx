@@ -335,6 +335,7 @@ function AlphaSurfaceInner({ config }) {
         payload: {
           mode: config.mode,
           webSearch: config.webSearch,
+          voiceEnabled: config.voiceEnabled,
           mcps: config.mcps,
           goal: config.goal,
           audience: config.audience,
@@ -366,6 +367,7 @@ function AlphaSurfaceInner({ config }) {
           payload: { 
             mode: configRef.current.mode, 
             webSearch: configRef.current.webSearch, 
+            voiceEnabled: configRef.current.voiceEnabled,
             mcps: configRef.current.mcps,
             goal: configRef.current.goal,
             audience: configRef.current.audience,
@@ -762,12 +764,12 @@ function AlphaSurfaceInner({ config }) {
               padding: "1px 5px", borderRadius: 4, background: "rgba(96,165,250,0.1)",
             }}>WEB</span>
           )}
-          {muted ? (
+          {muted || !config.voiceEnabled ? (
             <span style={{
               color: "#f87171", fontSize: 9, fontWeight: 700, letterSpacing: "0.05em",
               padding: "1px 5px", borderRadius: 4, background: "rgba(248,113,113,0.12)",
             }}>MIC OFF</span>
-          ) : config.voiceEnabled && (
+          ) : (
             <span style={{
               color: "#34d399", fontSize: 9, fontWeight: 700, letterSpacing: "0.05em",
               padding: "1px 5px", borderRadius: 4, background: "rgba(52,211,153,0.1)",

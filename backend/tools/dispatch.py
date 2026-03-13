@@ -10,8 +10,9 @@ def dispatch_image_gen(prompt: str) -> str:
     return f"Image generation dispatched: {prompt}"
 
 
-def dispatch_youtube(query: str, count: int = 0) -> str:
+def dispatch_youtube(query: str, count: int) -> str:
     payload = {"query": query}
+    count = int(count)
     if count > 0:
         payload["count"] = count
         payload["max_results"] = count

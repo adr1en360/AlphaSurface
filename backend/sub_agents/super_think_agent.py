@@ -22,11 +22,12 @@ from typing import Optional
 
 from google.genai import Client, types
 import os
+from model_config import THINKING_MODEL
 from sub_agents import emit_failure_note
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-_MODEL = "gemini-2.5-pro"
+_MODEL = THINKING_MODEL
 _THINKING_BUDGET = 8192  # tokens dedicated to internal reasoning
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -186,7 +187,7 @@ async def _place_super_think(broadcast_fn, sections: dict[str, list[str]]):
             "id": stamp_id,
             "x": bx,
             "y": by - 32,
-            "text": "🧠 SuperThink · gemini-2.5-pro",
+            "text": f"🧠 SuperThink · {_MODEL}",
             "size": "s",
             "color": "violet",
         }

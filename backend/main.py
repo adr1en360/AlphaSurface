@@ -99,6 +99,7 @@ persona_agent = get_persona_agent()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     subagent_cooldown_until: dict[str, float] = {}
+    subagent_run_lock = asyncio.Lock()
 
     def _retry_after_seconds(error: Exception) -> float:
         msg = str(error)
@@ -125,39 +126,61 @@ async def lifespan(app: FastAPI):
             })
             return
 
-        await broadcast({
-            "type": "ai_status",
-            "payload": {
-                "status": "thinking",
-                "subagent": agent_name,
-                "detail": f"{agent_name} running",
-            },
-        })
-        try:
-            await run_fn(payload, broadcast, *extra_args)
+        async with subagent_run_lock:
             await broadcast({
                 "type": "ai_status",
                 "payload": {
-                    "status": "idle",
+                    "status": "thinking",
                     "subagent": agent_name,
-                    "detail": f"{agent_name} done",
+                    "detail": f"{agent_name} running",
                 },
             })
-        except Exception as e:
-            print(f"[SubAgent:{agent_name}] Error: {e}")
-            msg = str(e)
-            is_rate_limited = "429" in msg or "RESOURCE_EXHAUSTED" in msg
+            try:
+                await run_fn(payload, broadcast, *extra_args)
+                await broadcast({
+                    "type": "ai_status",
+                    "payload": {
+                        "status": "idle",
+                        "subagent": agent_name,
+                        "detail": f"{agent_name} done",
+                    },
+                })
+            except Exception as e:
+                print(f"[SubAgent:{agent_name}] Error: {e}")
+                msg = str(e)
+                is_rate_limited = "429" in msg or "RESOURCE_EXHAUSTED" in msg
 
-            if is_rate_limited:
-                backoff = max(20.0, _retry_after_seconds(e))
-                subagent_cooldown_until[agent_name] = time.monotonic() + backoff
+                if is_rate_limited:
+                    backoff = max(20.0, _retry_after_seconds(e))
+                    subagent_cooldown_until[agent_name] = time.monotonic() + backoff
+                    note_x, note_y = find_empty_note_position()
+                    await broadcast({
+                        "type": "add_note",
+                        "payload": {
+                            "x": note_x,
+                            "y": note_y,
+                            "text": f"{agent_name} rate-limited. Cooling down for {int(backoff)}s.",
+                            "color": "light-red",
+                            "size": "m",
+                        },
+                    })
+                    await broadcast({
+                        "type": "ai_status",
+                        "payload": {
+                            "status": "idle",
+                            "subagent": agent_name,
+                            "detail": f"{agent_name} rate-limited ({int(backoff)}s)",
+                        },
+                    })
+                    return
+
                 note_x, note_y = find_empty_note_position()
                 await broadcast({
                     "type": "add_note",
                     "payload": {
                         "x": note_x,
                         "y": note_y,
-                        "text": f"{agent_name} rate-limited. Cooling down for {int(backoff)}s.",
+                        "text": f"{agent_name} failed. Check terminal logs.",
                         "color": "light-red",
                         "size": "m",
                     },
@@ -167,30 +190,9 @@ async def lifespan(app: FastAPI):
                     "payload": {
                         "status": "idle",
                         "subagent": agent_name,
-                        "detail": f"{agent_name} rate-limited ({int(backoff)}s)",
+                        "detail": f"{agent_name} failed",
                     },
                 })
-                return
-
-            note_x, note_y = find_empty_note_position()
-            await broadcast({
-                "type": "add_note",
-                "payload": {
-                    "x": note_x,
-                    "y": note_y,
-                    "text": f"{agent_name} failed. Check terminal logs.",
-                    "color": "light-red",
-                    "size": "m",
-                },
-            })
-            await broadcast({
-                "type": "ai_status",
-                "payload": {
-                    "status": "idle",
-                    "subagent": agent_name,
-                    "detail": f"{agent_name} failed",
-                },
-            })
 
     # Start event bus monitor
     bus.start()
@@ -351,6 +353,7 @@ async def websocket_endpoint(websocket: WebSocket):
             elif msg_type == "set_config":
                 mode = payload.get("mode", agent.mode)
                 web_search = payload.get("webSearch", agent.web_search)
+                voice_enabled = bool(payload.get("voiceEnabled", True))
                 goal = payload.get("goal")
                 audience = payload.get("audience")
                 uploaded_file = payload.get("uploadedFile")
@@ -374,6 +377,12 @@ async def websocket_endpoint(websocket: WebSocket):
                         print(f"[WS] Saved audience to memory: {audience.strip()}")
                     except Exception as e:
                         print(f"[WS] Failed to save audience to memory: {e}")
+
+                try:
+                    mem = memory_store()
+                    await mem.merge("user", {"mic_enabled": voice_enabled})
+                except Exception as e:
+                    print(f"[WS] Failed to save mic state to memory: {e}")
 
                 # Save Provocation Settings to memory
                 if provoc_freq or provoc_style:

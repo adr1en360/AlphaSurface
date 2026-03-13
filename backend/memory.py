@@ -55,8 +55,10 @@ def _deep_merge(base: dict, updates: dict) -> None:
 
 # ── SQLite implementation ─────────────────────────────────────────────────────
 
+_DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "alphasurface_memory.db")
+
 class SQLiteMemoryStore(MemoryStore):
-    def __init__(self, db_path: str = "alphasurface_memory.db"):
+    def __init__(self, db_path: str = _DEFAULT_DB_PATH):
         self.db_path = db_path
         self._init_db()
 
@@ -132,5 +134,9 @@ def memory_store() -> MemoryStore:
     global _store
     if _store is None:
         backend = os.environ.get("MEMORY_BACKEND", "sqlite").lower()
-        _store = FirestoreMemoryStore() if backend == "firestore" else SQLiteMemoryStore()
+        if backend == "firestore":
+            _store = FirestoreMemoryStore()
+        else:
+            db_path = os.environ.get("MEMORY_DB_PATH", _DEFAULT_DB_PATH)
+            _store = SQLiteMemoryStore(db_path=db_path)
     return _store

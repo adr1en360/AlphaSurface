@@ -53,6 +53,7 @@ class AlphaSurfaceAgent:
         self._vision_trigger_cooldown = 60.0
         self._agent_quiet_required = 30.0
         self._ready = asyncio.Event()
+        self._recoverable_live_disconnect = False
 
         bus = get_event_bus()
         bus.subscribe("provocation_ready", self._on_provocation_ready)
@@ -221,39 +222,52 @@ class AlphaSurfaceAgent:
                 session_id=SESSION_ID,
             )
 
-        self._session = session
-        self._live_queue = LiveRequestQueue()
-        self.running = True
-        self._ready.clear()
-        get_event_bus().reset_timers()
-
         print(f"[Agent] Session open — mode={self.mode} web_search={self.web_search} persona_keys={list(persona.keys())}")
 
-        _lq = self._live_queue
-
-        def _nudge(text: str):
-            if self.running and _lq:
-                try:
-                    _lq.send_content(
-                        content=types.Content(role="user", parts=[types.Part(text=text)])
-                    )
-                except Exception as exc:
-                    print(f"[Agent] Nudge failed: {exc}")
-
-        from sub_agents.persona_agent import get_persona_agent
-        get_persona_agent().set_nudge_fn(_nudge)
-
-        await self._emit("ai_status", {"status": "idle"})
-
+        reconnect_attempts = 0
         try:
-            await asyncio.gather(
-                self._send_loop(),
-                self._receive_loop(self._build_run_config()),
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            print(f"[Agent] Session task failed: {exc}")
+            while True:
+                self._session = session
+                self._live_queue = LiveRequestQueue()
+                self.running = True
+                self._ready.clear()
+                self._recoverable_live_disconnect = False
+                get_event_bus().reset_timers()
+
+                _lq = self._live_queue
+
+                def _nudge(text: str):
+                    if self.running and _lq:
+                        try:
+                            _lq.send_content(
+                                content=types.Content(role="user", parts=[types.Part(text=text)])
+                            )
+                        except Exception as exc:
+                            print(f"[Agent] Nudge failed: {exc}")
+
+                from sub_agents.persona_agent import get_persona_agent
+                get_persona_agent().set_nudge_fn(_nudge)
+
+                await self._emit("ai_status", {"status": "idle"})
+
+                try:
+                    await asyncio.gather(
+                        self._send_loop(),
+                        self._receive_loop(self._build_run_config()),
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    print(f"[Agent] Session task failed: {exc}")
+
+                if self._recoverable_live_disconnect and self._emit_disconnected_on_exit and reconnect_attempts < 3:
+                    reconnect_attempts += 1
+                    wait_seconds = min(6.0, 1.5 * reconnect_attempts)
+                    print(f"[Agent] Live connection dropped (transient). Reconnecting in {wait_seconds:.1f}s...")
+                    await asyncio.sleep(wait_seconds)
+                    continue
+
+                break
         finally:
             self.running = False
             self._ready.clear()
@@ -305,8 +319,9 @@ class AlphaSurfaceAgent:
 
                         agent_quiet = (now - self._last_tool_call_time) >= self._agent_quiet_required
                         cooldown_ok = (now - self._last_vision_trigger) >= self._vision_trigger_cooldown
+                        mode_allows_proactive = self.mode == "think"
 
-                        if self._pending_vision_trigger and agent_quiet and cooldown_ok:
+                        if self._pending_vision_trigger and agent_quiet and cooldown_ok and mode_allows_proactive:
                             self._send_content([
                                 types.Part(text=(
                                     "The user has made new changes to the canvas. "
@@ -378,9 +393,19 @@ class AlphaSurfaceAgent:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            print(f"[Agent] Receive loop error: {exc}")
-            import traceback
-            traceback.print_exc()
+            msg = str(exc)
+            recoverable = (
+                "1006" in msg
+                or "keepalive ping timeout" in msg
+                or "abnormal closure" in msg
+            )
+            if recoverable:
+                print(f"[Agent] Receive loop transient disconnect: {msg}")
+                self._recoverable_live_disconnect = True
+            else:
+                print(f"[Agent] Receive loop error: {exc}")
+                import traceback
+                traceback.print_exc()
             self.running = False
             self._ready.clear()
             if self._live_queue is not None:

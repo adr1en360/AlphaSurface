@@ -36,6 +36,7 @@ from google.genai import types
 
 from event_bus import get_event_bus
 from memory import memory_store
+from model_config import FAST_MODEL
 import tools as canvas_tools
 
 USER_ID = "user"
@@ -133,7 +134,7 @@ class PersonaAgent:
                 # Create the ADK Agent
                 analysis_agent = Agent(
                     name="persona_analysis_agent",
-                    model="gemini-2.5-flash",
+                    model=FAST_MODEL,
                     instruction=_PERSONA_SYSTEM,
                     output_schema=PersonaUpdates,
                     output_key="persona_updates",

@@ -17,12 +17,13 @@ from typing import Optional
 
 from googleapiclient.discovery import build
 from google.genai import Client
+from model_config import FAST_MODEL
 from sub_agents import emit_failure_note
 from tools.state import canvas_state
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-_MODEL = "gemini-2.5-flash"
+_MODEL = FAST_MODEL
 _MAX_RESULTS = 5          # candidates to fetch from YouTube API
 _MAX_DURATION_SECS = 5400  # 90 minutes — skip anything longer (livestream/movie)
 _MIN_DURATION_SECS = 60    # 1 minute — skip very short clips

@@ -25,11 +25,12 @@ from pathlib import Path
 
 from google import genai
 from google.genai import types
+from model_config import IMAGE_MODEL
 from sub_agents import emit_failure_note
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-_MODEL = "gemini-2.5-flash-image"
+_MODEL = IMAGE_MODEL
 _STATIC_DIR = Path(__file__).parent.parent / "static" / "images"
 _STATIC_DIR.mkdir(parents=True, exist_ok=True)
 
