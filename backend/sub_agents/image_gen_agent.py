@@ -20,6 +20,7 @@ Frontend requirement:
 import asyncio
 import httpx
 import os
+import textwrap
 import time
 import uuid
 from urllib.parse import quote_plus
@@ -213,15 +214,29 @@ async def _place_image(broadcast_fn, image_id: str, prompt: str, width: int = 48
     image_url = f"{_BASE_URL}/static/images/{image_id}.png"
 
     # 1 — Attribution stamp
-    stamp_id = f"img_stamp_{uuid.uuid4().hex[:8]}"
+    stamp_id = f"shape:img_stamp_{uuid.uuid4().hex[:8]}"
     await broadcast_fn({
         "type": "add_text",
-        "payload": {"id": stamp_id, "x": bx, "y": by - 28, "text": "🎨 ImageGenAgent", "size": "s", "color": "violet"},
+        "payload": {
+            "id": stamp_id,
+            "x": bx,
+            "y": by - 28,
+            "text": "ImageGenAgent",
+            "size": "s",
+            "color": "violet",
+            "meta": {
+                "semanticRole": "image_stamp",
+                "source": "ImageGenAgent",
+                "confidence": 0.95,
+                "linked_to": [f"shape:{image_id}"],
+                "addedBy": "ImageGenAgent",
+            },
+        },
     })
     await asyncio.sleep(0.05)
 
     # 2 — Image shape
-    img_shape_id = f"img_{image_id}"
+    img_shape_id = f"shape:{image_id}"
     await broadcast_fn({
         "type": "add_image",
         "id": img_shape_id,
@@ -230,20 +245,48 @@ async def _place_image(broadcast_fn, image_id: str, prompt: str, width: int = 48
         "width": width,
         "height": height,
         "src": image_url,
+        "meta": {
+            "semanticRole": "generated_image",
+            "source": "ImageGenAgent",
+            "confidence": 0.9,
+            "linked_to": [],
+            "addedBy": "ImageGenAgent",
+        },
     })
     await asyncio.sleep(0.1)
 
-    # 3 — Caption note below
-    caption_id = f"img_caption_{uuid.uuid4().hex[:8]}"
-    short_prompt = prompt[:60] + ("..." if len(prompt) > 60 else "")
+    # 3 — Multiline prompt details below the image
+    caption_id = f"shape:img_caption_{uuid.uuid4().hex[:8]}"
+    wrapped_prompt = textwrap.fill(prompt.strip(), width=46) if prompt.strip() else "No prompt provided"
     await broadcast_fn({
-        "type": "add_note",
-        "payload": {"id": caption_id, "x": bx, "y": by + height + 20, "text": short_prompt, "color": "grey", "size": "m"},
+        "type": "add_text",
+        "payload": {
+            "id": caption_id,
+            "x": bx,
+            "y": by + height + 20,
+            "text": f"Prompt\n{wrapped_prompt}",
+            "color": "black",
+            "size": "s",
+            "meta": {
+                "semanticRole": "image_caption",
+                "source": "ImageGenAgent",
+                "confidence": 0.8,
+                "linked_to": [img_shape_id],
+                "addedBy": "ImageGenAgent",
+            },
+        },
     })
     await asyncio.sleep(0.05)
 
-    # 4 — Zoom to fit
-    await broadcast_fn({"type": "zoom_to_fit"})
+    # 4 — Viewport-aware focus event
+    await broadcast_fn({
+        "type": "focus_artifact",
+        "payload": {
+            "shapeIds": [img_shape_id, caption_id],
+            "primaryShapeId": img_shape_id,
+            "reason": "image_ready",
+        },
+    })
     print(f"[ImageGenAgent] Image placed — {image_url}")
 
 

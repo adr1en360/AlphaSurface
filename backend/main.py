@@ -55,7 +55,54 @@ CANVAS_PASSTHROUGH_TYPES = {
     "align_shapes", "distribute_shapes", "resize_shape",
     "create_frame", "group_shapes", "label_shape",
     "add_image",
+    "add_research_card", "add_provocation_card", "focus_artifact",
 }
+
+
+def _normalize_canvas_action(action: dict) -> dict:
+    """Normalize legacy actions into richer semantic action types when possible."""
+    if not isinstance(action, dict):
+        return action
+
+    if action.get("type") != "add_note":
+        return action
+
+    payload = action.get("payload") or {}
+    if not isinstance(payload, dict):
+        return action
+
+    note_id = str(payload.get("id", ""))
+    text = str(payload.get("text", "")).strip()
+    color = str(payload.get("color", "")).strip().lower()
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    role = str(meta.get("semanticRole", "")).strip().lower()
+
+    is_status_note = "task_status_" in note_id
+    is_candidate = (
+        (role == "provocation" or color in {"light-violet", "violet"})
+        and text.endswith("?")
+        and not is_status_note
+    )
+    if not is_candidate:
+        return action
+
+    return {
+        "type": "add_provocation_card",
+        "payload": {
+            "id": payload.get("id") or f"shape:provocation_{uuid.uuid4().hex[:10]}",
+            "x": payload.get("x", 220),
+            "y": payload.get("y", 220),
+            "text": text,
+            "color": color or "light-violet",
+            "meta": {
+                "semanticRole": "provocation_card",
+                "source": meta.get("source", "live_agent"),
+                "confidence": float(meta.get("confidence", 0.78)),
+                "linked_to": meta.get("linked_to", []),
+                "addedBy": meta.get("addedBy", "live_agent"),
+            },
+        },
+    }
 
 
 async def broadcast(message: dict):
@@ -75,6 +122,7 @@ async def drain_canvas_actions():
     while True:
         try:
             action = canvas_tools.canvas_action_queue.get_nowait()
+            action = _normalize_canvas_action(action)
             print(f"[App] Canvas action: {action['type']}")
             await broadcast(action)
         except asyncio.QueueEmpty:
@@ -182,9 +230,16 @@ async def lifespan(app: FastAPI):
                     "payload": {
                         "x": note_x,
                         "y": note_y,
-                        "text": f"{agent_name} rate-limited. Cooling down for {int(backoff)}s.",
+                        "text": f"{agent_name} is temporarily busy. Please retry in about {int(backoff)}s.",
                         "color": "light-red",
                         "size": "m",
+                        "meta": {
+                            "semanticRole": "error_notice",
+                            "source": agent_name,
+                            "confidence": 1.0,
+                            "linked_to": [],
+                            "addedBy": agent_name,
+                        },
                     },
                 })
                 await broadcast({
@@ -204,9 +259,16 @@ async def lifespan(app: FastAPI):
                 "payload": {
                     "x": note_x,
                     "y": note_y,
-                    "text": f"{agent_name} failed. Check terminal logs.",
+                    "text": f"{agent_name} could not finish that request. Try again with a more specific prompt.",
                     "color": "light-red",
                     "size": "m",
+                    "meta": {
+                        "semanticRole": "error_notice",
+                        "source": agent_name,
+                        "confidence": 1.0,
+                        "linked_to": [],
+                        "addedBy": agent_name,
+                    },
                 },
             })
             await broadcast({
@@ -352,10 +414,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 shape_count = payload.get("shape_count", 0)
                 viewport = payload.get("viewport", None)
                 selected = payload.get("selectedShapeIds", None)
+                current_page_id = payload.get("currentPageId")
+                current_page_name = payload.get("currentPageName")
+                pages = payload.get("pages")
                 changed = canvas_tools.update_canvas_state(
                     shapes, shape_count,
                     viewport=viewport,
                     selected_shape_ids=selected,
+                    current_page_id=current_page_id,
+                    current_page_name=current_page_name,
+                    pages=pages,
                 )
                 if changed:
                     bus.signal_canvas_change()  # ← event-driven, not timer

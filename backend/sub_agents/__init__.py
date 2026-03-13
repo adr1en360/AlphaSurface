@@ -52,8 +52,15 @@ def find_empty_note_position(note_w: int = 320, note_h: int = 140) -> tuple[int,
 async def emit_failure_note(broadcast_fn, agent_name: str, error: Exception | str) -> None:
 	"""Broadcast a visible canvas note when a sub-agent fails."""
 	message = str(error).strip() if error is not None else "unknown error"
-	if len(message) > 140:
-		message = message[:137] + "..."
+	lower = message.lower()
+	if "resource_exhausted" in lower or "429" in lower or "rate" in lower:
+		user_text = "Temporary capacity limit. Please try again in a moment."
+	elif "timed out" in lower or "timeout" in lower:
+		user_text = "That took too long. Try a shorter prompt or retry now."
+	elif "401" in lower or "403" in lower or "auth" in lower or "key" in lower:
+		user_text = "Authorization issue detected. Please verify provider credentials."
+	else:
+		user_text = "Could not complete that request. Please retry with a clearer prompt."
 	x, y = find_empty_note_position()
 
 	await broadcast_fn({
@@ -61,9 +68,16 @@ async def emit_failure_note(broadcast_fn, agent_name: str, error: Exception | st
 		"payload": {
 			"x": x,
 			"y": y,
-			"text": f"{agent_name} failed: {message}",
+			"text": f"{agent_name}: {user_text}",
 			"color": "light-red",
 			"size": "m",
+			"meta": {
+				"semanticRole": "error_notice",
+				"source": agent_name,
+				"confidence": 1.0,
+				"linked_to": [],
+				"addedBy": agent_name,
+			},
 		},
 	})
 

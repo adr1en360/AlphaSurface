@@ -2,6 +2,7 @@ import asyncio
 import base64
 import contextlib
 import hashlib
+import logging
 import os
 import time
 from typing import Awaitable, Callable
@@ -15,6 +16,11 @@ from google.genai import types
 from agent import create_agent
 from event_bus import get_event_bus
 from memory import memory_store
+from model_config import FAST_MODEL, LIVE_MODEL
+
+# ADK emits repeated non-fatal warnings for default function-parameter values
+# when targeting Gemini API. Keep logs readable by suppressing that warning source.
+logging.getLogger("google_adk.google.adk.tools._function_parameter_parse_util").setLevel(logging.ERROR)
 
 APP_NAME = "alphasurface"
 USER_ID = "user"
@@ -55,6 +61,8 @@ class AlphaSurfaceAgent:
         self._agent_quiet_required = 30.0
         self._ready = asyncio.Event()
         self._recoverable_live_disconnect = False
+        self._audio_live_enabled = True
+        self._active_live_model = LIVE_MODEL
 
         bus = get_event_bus()
         bus.subscribe("provocation_ready", self._on_provocation_ready)
@@ -191,44 +199,65 @@ class AlphaSurfaceAgent:
         print("[Agent] Provocation triggered (event-driven silence)")
 
     def _build_run_config(self) -> RunConfig:
-        return RunConfig(
-            streaming_mode=StreamingMode.BIDI,
-            speech_config=types.SpeechConfig(
+        response_modalities = [types.Modality.AUDIO] if self._audio_live_enabled else [types.Modality.TEXT]
+        speech_config = None
+        if self._audio_live_enabled:
+            speech_config = types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Aoede")
                 )
-            ),
-            response_modalities=[types.Modality.AUDIO],
-            session_resumption=types.SessionResumptionConfig(),
+            )
+
+        return RunConfig(
+            streaming_mode=StreamingMode.BIDI,
+            speech_config=speech_config,
+            response_modalities=response_modalities,
+            session_resumption=types.SessionResumptionConfig() if self._audio_live_enabled else None,
         )
 
     async def _run_session(self):
         persona = await memory_store().read(USER_ID)
-        agent = create_agent(self.mode, self.web_search, persona)
-
-        self._runner = Runner(
-            agent=agent,
-            app_name=APP_NAME,
-            session_service=self._session_service,
-        )
-
-        session = await self._session_service.get_session(
-            app_name=APP_NAME,
-            user_id=USER_ID,
-            session_id=SESSION_ID,
-        )
-        if session is None:
-            session = await self._session_service.create_session(
-                app_name=APP_NAME,
-                user_id=USER_ID,
-                session_id=SESSION_ID,
-            )
-
-        print(f"[Agent] Session open — mode={self.mode} web_search={self.web_search} persona_keys={list(persona.keys())}")
 
         reconnect_attempts = 0
         try:
             while True:
+                # Each reconnect attempt always starts in preferred audio mode.
+                # Text-only is a within-session fallback only, not a permanent state.
+                self._audio_live_enabled = True
+                self._active_live_model = LIVE_MODEL
+                active_session_id = SESSION_ID if self._audio_live_enabled else f"{SESSION_ID}_text"
+                agent = create_agent(
+                    self.mode,
+                    self.web_search,
+                    persona,
+                    model_name=self._active_live_model,
+                )
+
+                self._runner = Runner(
+                    agent=agent,
+                    app_name=APP_NAME,
+                    session_service=self._session_service,
+                )
+
+                session = await self._session_service.get_session(
+                    app_name=APP_NAME,
+                    user_id=USER_ID,
+                    session_id=active_session_id,
+                )
+                if session is None:
+                    session = await self._session_service.create_session(
+                        app_name=APP_NAME,
+                        user_id=USER_ID,
+                        session_id=active_session_id,
+                    )
+
+                print(
+                    "[Agent] Session open — "
+                    f"mode={self.mode} web_search={self.web_search} "
+                    f"model={self._active_live_model} audio_live={self._audio_live_enabled} "
+                    f"persona_keys={list(persona.keys())}"
+                )
+
                 self._session = session
                 self._live_queue = LiveRequestQueue()
                 self.running = True
@@ -284,7 +313,10 @@ class AlphaSurfaceAgent:
 
     async def _send_loop(self):
         self._ready.set()
-        print("[Agent] Ready — mic live")
+        if self._audio_live_enabled:
+            print("[Agent] Ready — mic live")
+        else:
+            print("[Agent] Ready — text live mode (audio disabled)")
 
         image_interval = 20.0
         min_image_gap = 1.5
@@ -298,9 +330,10 @@ class AlphaSurfaceAgent:
                     except asyncio.QueueEmpty:
                         break
                 if chunks:
-                    self._live_queue.send_realtime(
-                        types.Blob(data=b"".join(chunks), mime_type="audio/pcm;rate=16000")
-                    )
+                    if self._audio_live_enabled:
+                        self._live_queue.send_realtime(
+                            types.Blob(data=b"".join(chunks), mime_type="audio/pcm;rate=16000")
+                        )
 
                 now = time.monotonic()
                 should_send_image = (
@@ -398,6 +431,18 @@ class AlphaSurfaceAgent:
             raise
         except Exception as exc:
             msg = str(exc)
+            unsupported_live_mode = (
+                "1008" in msg
+                and (
+                    "not implemented" in msg.lower()
+                    or "not supported" in msg.lower()
+                    or "not enabled" in msg.lower()
+                )
+            )
+            voice_mismatch_mode = (
+                "1007" in msg
+                and "cannot extract voices from a non-audio request" in msg.lower()
+            )
             recoverable = (
                 "1006" in msg
                 or "1011" in msg
@@ -405,7 +450,17 @@ class AlphaSurfaceAgent:
                 or "keepalive ping timeout" in msg
                 or "abnormal closure" in msg
             )
-            if recoverable:
+            if unsupported_live_mode and self._audio_live_enabled:
+                print("[Agent] Live audio mode unsupported by current model/account. Falling back to text-only live mode.")
+                self._audio_live_enabled = False
+                self._active_live_model = FAST_MODEL
+                self._recoverable_live_disconnect = True
+            elif voice_mismatch_mode:
+                print("[Agent] Voice config mismatch in text mode. Reconnecting with text model/session only.")
+                self._audio_live_enabled = False
+                self._active_live_model = FAST_MODEL
+                self._recoverable_live_disconnect = True
+            elif recoverable:
                 print(f"[Agent] Receive loop transient disconnect: {msg}")
                 self._recoverable_live_disconnect = True
             else:

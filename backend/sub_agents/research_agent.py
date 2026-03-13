@@ -21,6 +21,7 @@ All shapes placed relative to current viewport center.
 import asyncio
 import os
 import random
+import uuid
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -148,136 +149,71 @@ def _make_shape_id(prefix: str) -> str:
 async def _place_cluster(broadcast_fn, title: str, bullets: list[str],
                           source_url: str | None, source_label: str | None,
                           long_form: bool = False):
-    """
-    Broadcast canvas actions in a newspaper-column layout (no frame — avoids overlap).
-    Shapes are placed as free-floating elements in a clean vertical column.
-    """
-    col_w = 420
-    base_bullet_h = 150 if long_form else 108
-    bullet_gap = 16
+    """Broadcast a single semantic research card plus optional linked source bookmark."""
+    col_w = 500 if long_form else 460
+    card_h = 340 if long_form else 280
+    card_id = f"shape:research_card_{uuid.uuid4().hex[:10]}"
+    bx, by = _find_empty_column_origin(col_w, card_h + 220)
 
-    # Dynamic heights prevent text overflow from visually colliding across blocks.
-    block_heights = []
-    for bullet in bullets:
-        extra_lines = min(6, max(0, len((bullet or "")) // 80))
-        block_heights.append(base_bullet_h + extra_lines * 20)
-
-    body_h = sum(block_heights) + max(0, len(block_heights) - 1) * bullet_gap
-    footer_h = 190 if source_url else 78
-    col_h = 108 + body_h + footer_h
-    bx, by = _find_empty_column_origin(col_w, col_h)
-
-    # ── Masthead ──────────────────────────────────────────────────────────────
     await broadcast_fn({
-        "type": "add_text",
+        "type": "add_research_card",
         "payload": {
-            "id": _make_shape_id("res_masthead"),
+            "id": card_id,
             "x": bx,
             "y": by,
-            "text": "RESEARCH DESK",
-            "size": "s",
-            "color": "grey",
-        }
-    })
-    await asyncio.sleep(0.04)
-
-    # ── Headline box ──────────────────────────────────────────────────────────
-    await broadcast_fn({
-        "type": "add_geo",
-        "payload": {
-            "id": _make_shape_id("res_headline"),
-            "x": bx,
-            "y": by + 24,
             "w": col_w,
-            "h": 70,
-            "text": title,
-            "color": "black",
-            "fill": "none",
-            "geo": "rectangle",
-        }
-    })
-    await asyncio.sleep(0.06)
-
-    # ── Thin divider ──────────────────────────────────────────────────────────
-    await broadcast_fn({
-        "type": "add_geo",
-        "payload": {
-            "id": _make_shape_id("res_divider"),
-            "x": bx,
-            "y": by + 98,
-            "w": col_w,
-            "h": 3,
-            "text": "",
-            "color": "grey",
-            "fill": "solid",
-            "geo": "rectangle",
-        }
-    })
-    await asyncio.sleep(0.04)
-
-    # ── Bullet cards ─────────────────────────────────────────────────────────
-    body_start_y = by + 108
-    cursor_y = body_start_y
-    for i, bullet in enumerate(bullets):
-        bullet_h = block_heights[i]
-        await broadcast_fn({
-            "type": "add_note",
-            "payload": {
-                "id": _make_shape_id("res_bullet"),
-                "x": bx,
-                "y": cursor_y,
-                "text": f"{i + 1}. {bullet}",
-                "color": "light-blue" if i % 2 == 0 else "yellow",
-                "size": "m",
-            }
-        })
-        await asyncio.sleep(0.06)
-        cursor_y += bullet_h + bullet_gap
-
-    # ── Source footer ─────────────────────────────────────────────────────────
-    footer_y = cursor_y + 12
-    source_label_text = source_label or "Source"
-    await broadcast_fn({
-        "type": "add_text",
-        "payload": {
-            "id": _make_shape_id("res_source_strip"),
-            "x": bx,
-            "y": footer_y,
-            "text": f"{source_label_text} · fact-checked",
-            "size": "s",
-            "color": "green",
-        }
-    })
-    await asyncio.sleep(0.04)
-
-    if source_url:
-        await broadcast_fn({
-            "type": "add_bookmark",
-            "payload": {
-                "id": _make_shape_id("res_source"),
-                "x": bx,
-                "y": footer_y + 22,
+            "h": card_h,
+            "title": title,
+            "bullets": bullets,
+            "source": {
                 "url": source_url,
-            }
-        })
-        await asyncio.sleep(0.1)
-
-    # ── Attribution ───────────────────────────────────────────────────────────
-    await broadcast_fn({
-        "type": "add_text",
-        "payload": {
-            "id": _make_shape_id("res_stamp"),
-            "x": bx + col_w - 180,
-            "y": footer_y + (120 if source_url else 20),
-            "text": "ResearchAgent" + (" · long form" if long_form else " · brief"),
-            "size": "s",
-            "color": "grey",
-        }
+                "label": source_label,
+            },
+            "meta": {
+                "semanticRole": "research_card",
+                "source": "ResearchAgent",
+                "confidence": 0.88,
+                "linked_to": [],
+                "addedBy": "ResearchAgent",
+            },
+        },
     })
     await asyncio.sleep(0.05)
 
-    await broadcast_fn({"type": "zoom_to_fit", "payload": {}})
-    print(f"[ResearchAgent] Newspaper column placed — '{title}' with {len(bullets)} items ({'long' if long_form else 'short'} form)")
+    linked_shapes = [card_id]
+    if source_url:
+        bookmark_id = f"shape:research_source_{uuid.uuid4().hex[:10]}"
+        await broadcast_fn({
+            "type": "add_bookmark",
+            "payload": {
+                "id": bookmark_id,
+                "x": bx,
+                "y": by + card_h + 18,
+                "url": source_url,
+                "meta": {
+                    "semanticRole": "research_source",
+                    "source": "ResearchAgent",
+                    "confidence": 0.83,
+                    "linked_to": [card_id],
+                    "addedBy": "ResearchAgent",
+                },
+            },
+        })
+        await asyncio.sleep(0.05)
+        linked_shapes.append(bookmark_id)
+
+    await broadcast_fn({
+        "type": "focus_artifact",
+        "payload": {
+            "shapeIds": linked_shapes,
+            "primaryShapeId": card_id,
+            "reason": "research_ready",
+        },
+    })
+    print(
+        f"[ResearchAgent] Research card placed — '{title}' with {len(bullets)} items "
+        f"({'long' if long_form else 'short'} form)"
+    )
 
 
 # ── Core research logic ───────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 from .state import canvas_state, canvas_action_queue
 from memory import memory_store
+import uuid
 
 _VALID_GEO = {
     "cloud", "rectangle", "ellipse", "triangle", "diamond", "pentagon",
@@ -107,6 +108,35 @@ def _find_non_overlapping_xy(x: int, y: int, w: int, h: int) -> tuple[int, int]:
 
     return x + 320, y + 220
 
+
+def _new_shape_id(prefix: str) -> str:
+    return f"shape:{prefix}_{uuid.uuid4().hex[:10]}"
+
+
+def _normalize_linked_to(linked_to) -> list[str]:
+    if linked_to is None:
+        return []
+    if isinstance(linked_to, list):
+        return [str(item).strip() for item in linked_to if str(item).strip()]
+    if isinstance(linked_to, str):
+        return [item.strip() for item in linked_to.split(",") if item.strip()]
+    return [str(linked_to).strip()] if str(linked_to).strip() else []
+
+
+def _semantic_meta(
+    semantic_role: str,
+    source: str = "live_agent",
+    confidence: float = 0.75,
+    linked_to = "",
+) -> dict:
+    return {
+        "semanticRole": semantic_role,
+        "source": source,
+        "confidence": float(confidence),
+        "linked_to": _normalize_linked_to(linked_to),
+        "addedBy": source,
+    }
+
 def list_canvas_shapes() -> dict:
     return {
         "shape_count": canvas_state["shape_count"],
@@ -163,46 +193,91 @@ def memory_write(user_id: str, key: str, value: str) -> str:
     return f"Memory updated: {key} = {value}"
 
 
-def add_text_to_canvas(text: str, x: int, y: int, color: str, size: str) -> str:
+def add_text_to_canvas(
+    text: str,
+    x: int,
+    y: int,
+    color: str,
+    size: str,
+    semantic_role: str = "text",
+    source: str = "live_agent",
+    confidence: float = 0.8,
+    linked_to: str = "",
+) -> str:
     if size not in ["s", "m", "l", "xl"]:
         size = "m"
     normalized_color = _normalize_color(color, "black")
     x, y = _find_non_overlapping_xy(int(x), int(y), 260, 88)
+    shape_id = _new_shape_id("text")
     canvas_action_queue.put_nowait({
         "type": "add_text",
-        "payload": {"text": text, "x": x, "y": y,
-                    "color": normalized_color, "size": size}
+        "payload": {
+            "id": shape_id,
+            "text": text,
+            "x": x,
+            "y": y,
+            "color": normalized_color,
+            "size": size,
+            "meta": _semantic_meta(semantic_role, source, confidence, linked_to),
+        }
     })
     return f"Text placed at ({x},{y})"
 
 
-def add_note_to_canvas(text: str, x: int, y: int, color: str, size: str) -> str:
+def add_note_to_canvas(
+    text: str,
+    x: int,
+    y: int,
+    color: str,
+    size: str,
+    semantic_role: str = "note",
+    source: str = "live_agent",
+    confidence: float = 0.75,
+    linked_to: str = "",
+) -> str:
     if size not in ["s", "m", "l", "xl"]:
         size = "m"
     normalized_color = _normalize_color(color, "yellow")
     x, y = _find_non_overlapping_xy(int(x), int(y), 280, 180)
+    shape_id = _new_shape_id("note")
+    if normalized_color in {"light-violet", "violet"} and "?" in (text or ""):
+        semantic_role = "provocation"
     canvas_action_queue.put_nowait({
         "type": "add_note",
-        "payload": {"text": text, "x": x, "y": y,
-                    "color": normalized_color, "size": size}
+        "payload": {
+            "id": shape_id,
+            "text": text,
+            "x": x,
+            "y": y,
+            "color": normalized_color,
+            "size": size,
+            "meta": _semantic_meta(semantic_role, source, confidence, linked_to),
+        }
     })
     return f"Note placed at ({x},{y})"
 
 
 def add_geo_to_canvas(text: str, geo: str, x: int, y: int,
-                      w: int, h: int, color: str, fill: str) -> str:
+                      w: int, h: int, color: str, fill: str,
+                      semantic_role: str = "geo",
+                      source: str = "live_agent",
+                      confidence: float = 0.8,
+                      linked_to: str = "") -> str:
     normalized_geo = _normalize_geo(geo)
     normalized_fill = _normalize_fill(fill)
     normalized_color = _normalize_color(color, "blue")
     final_w = int(w or 200)
     final_h = int(h or 120)
     x, y = _find_non_overlapping_xy(int(x), int(y), final_w, final_h)
+    shape_id = _new_shape_id("geo")
     canvas_action_queue.put_nowait({
         "type": "add_geo",
         "payload": {
+            "id": shape_id,
             "text": text, "geo": normalized_geo,
             "x": x, "y": y, "w": final_w, "h": final_h,
-            "color": normalized_color, "fill": normalized_fill
+            "color": normalized_color, "fill": normalized_fill,
+            "meta": _semantic_meta(semantic_role, source, confidence, linked_to),
         }
     })
     return f"{normalized_geo} at ({x},{y})"
@@ -241,11 +316,26 @@ def add_embed_to_canvas(url: str, x: int, y: int, w: int, h: int) -> str:
     return f"Embedded {url}"
 
 
-def add_bookmark_to_canvas(url: str, x: int, y: int) -> str:
+def add_bookmark_to_canvas(
+    url: str,
+    x: int,
+    y: int,
+    semantic_role: str = "bookmark",
+    source: str = "live_agent",
+    confidence: float = 0.7,
+    linked_to: str = "",
+) -> str:
     x, y = _find_non_overlapping_xy(int(x), int(y), 320, 180)
+    shape_id = _new_shape_id("bookmark")
     canvas_action_queue.put_nowait({
         "type": "add_bookmark",
-        "payload": {"url": url, "x": x, "y": y}
+        "payload": {
+            "id": shape_id,
+            "url": url,
+            "x": x,
+            "y": y,
+            "meta": _semantic_meta(semantic_role, source, confidence, linked_to),
+        }
     })
     return f"Bookmarked {url}"
 
