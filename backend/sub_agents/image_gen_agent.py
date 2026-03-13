@@ -21,7 +21,6 @@ import asyncio
 import httpx
 import os
 import textwrap
-import time
 import uuid
 from urllib.parse import quote_plus
 from pathlib import Path
@@ -52,36 +51,25 @@ _BASE_URL = os.environ.get("ALPHASURFACE_BASE_URL", "http://localhost:8000")
 # ── Image generation ──────────────────────────────────────────────────────────
 
 def _generate_image_sync(prompt: str) -> bytes | None:
-    """Synchronous image generation — runs in thread with retry on 429."""
+    """Synchronous Gemini image generation (single attempt, fail fast)."""
     client = genai.Client()
+    response = client.models.generate_content(
+        model=_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_modalities=["IMAGE", "TEXT"],
+        ),
+    )
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model=_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE", "TEXT"],
-                ),
-            )
+    # Look through candidates to safely access parts
+    for candidate in response.candidates:
+        if not candidate.content or not candidate.content.parts:
+            continue
+        for part in candidate.content.parts:
+            if part.inline_data and part.inline_data.mime_type.startswith("image/"):
+                return part.inline_data.data
 
-            # Look through candidates to safely access parts
-            for candidate in response.candidates:
-                if not candidate.content or not candidate.content.parts:
-                    continue
-                for part in candidate.content.parts:
-                    if part.inline_data and part.inline_data.mime_type.startswith("image/"):
-                        return part.inline_data.data
-
-            return None
-        except Exception as e:
-            if "429" in str(e) and attempt < max_retries - 1:
-                wait = 20 * (attempt + 1)
-                print(f"[ImageGenAgent] Rate limited, retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
-                time.sleep(wait)
-            else:
-                raise
+    return None
 
 
 def _generate_image_pollinations_sync(prompt: str) -> bytes | None:
@@ -110,25 +98,21 @@ def _generate_image_pollinations_sync(prompt: str) -> bytes | None:
     with httpx.Client(timeout=90.0, follow_redirects=True) as client:
         last_exc: Exception | None = None
         for endpoint in candidates:
-            for attempt in range(2):
-                try:
-                    response = client.get(endpoint, headers=headers, params=params)
-                    response.raise_for_status()
-                    content_type = response.headers.get("content-type", "").lower()
-                    if "image" not in content_type and not response.content:
-                        return None
-                    return response.content
-                except Exception as exc:
-                    last_exc = exc
-                    status_code = getattr(getattr(exc, "response", None), "status_code", None)
-                    if status_code == 401 and not _POLLINATIONS_API_KEY:
-                        raise RuntimeError(
-                            "Pollinations rejected the request with 401. "
-                            "Set POLLINATIONS_API_KEY to enable Pollinations fallback."
-                        ) from exc
-                    if attempt == 0:
-                        time.sleep(1.2)
-                        continue
+            try:
+                response = client.get(endpoint, headers=headers, params=params)
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "").lower()
+                if "image" not in content_type and not response.content:
+                    return None
+                return response.content
+            except Exception as exc:
+                last_exc = exc
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                if status_code == 401 and not _POLLINATIONS_API_KEY:
+                    raise RuntimeError(
+                        "Pollinations rejected the request with 401. "
+                        "Set POLLINATIONS_API_KEY to enable Pollinations fallback."
+                    ) from exc
         if last_exc:
             raise last_exc
         return None

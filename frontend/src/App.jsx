@@ -75,6 +75,8 @@ const VALID_ACTIONS = new Set([
   "create_frame",
   "group_shapes",
   "label_shape",
+  "undo",
+  "redo",
   "audio_response",
   "ai_interrupted",
   "ai_status",
@@ -420,15 +422,13 @@ function handleCanvasMessage(editor, message) {
       break
     }
 
-    case 'create_frame': {
-      editor.createShape({
-        id: createShapeId(),
-        type: 'frame',
-        x: p.x, y: p.y,
-        props: { w: p.w, h: p.h, name: p.label },
-      })
+    case "undo":
+      editor.undo()
       break
-    }
+
+    case "redo":
+      editor.redo()
+      break
 
     case 'group_shapes': {
       editor.groupShapes(p.shapeIds)
@@ -532,6 +532,7 @@ function handleCanvasMessage(editor, message) {
 // ── Status config ─────────────────────────────────────────────────────────────
 const STATUS = {
   idle:         { label: "Active",     dot: "#10b981", pulse: false },
+  listening:    { label: "Listening",  dot: "#10b981", pulse: true  },
   thinking:     { label: "Thinking…",  dot: "#f59e0b", pulse: true  },
   speaking:     { label: "Speaking",   dot: "#06b6d4", pulse: true  },
   disconnected: { label: "Offline",    dot: "#6b7280", pulse: false },
@@ -771,11 +772,15 @@ function AlphaSurfaceInner({ config }) {
   const [indicator, setIndicator] = useState(false)
   const [aiStatus, setAiStatus] = useState("disconnected")
   const [muted, setMuted] = useState(false)
+  const [listening, setListening] = useState(false)
 
   const wsRef = useRef(null)
   const prevShapeCount = useRef(0)
   const mutedRef = useRef(false)
   const lastInterruptAtRef = useRef(0)
+  const lastVoiceAtRef = useRef(0)
+  const listeningRef = useRef(false)
+  const listeningTimeoutRef = useRef(null)
   const configRef = useRef(config)
 
   const provocFreq = "Normal"
@@ -784,6 +789,10 @@ function AlphaSurfaceInner({ config }) {
   useEffect(() => {
     configRef.current = config
   }, [config])
+
+  useEffect(() => {
+    listeningRef.current = listening
+  }, [listening])
 
   // ── WebSocket connection ────────────────────────────────────────────────────
   useEffect(() => {
@@ -845,6 +854,11 @@ function AlphaSurfaceInner({ config }) {
       socket.onerror = () => {}
       socket.onclose = () => {
         if (disposed) return
+        setListening(false)
+        if (listeningTimeoutRef.current) {
+          clearTimeout(listeningTimeoutRef.current)
+          listeningTimeoutRef.current = null
+        }
         setWs(null); wsRef.current = null; setAiStatus("disconnected")
         retryTimeout = setTimeout(() => { retryDelay = Math.min(retryDelay * 2, 30000); connect() }, retryDelay)
       }
@@ -986,6 +1000,27 @@ function AlphaSurfaceInner({ config }) {
           if (!currentWs || currentWs.readyState !== WebSocket.OPEN) return
           if (mutedRef.current) return
           const input = e.inputBuffer.getChannelData(0)
+
+          // Lightweight voice activity detection for status UI.
+          let sumSquares = 0
+          for (let i = 0; i < input.length; i++) {
+            const v = input[i]
+            sumSquares += v * v
+          }
+          const rms = Math.sqrt(sumSquares / input.length)
+          if (rms > 0.015) {
+            lastVoiceAtRef.current = Date.now()
+            if (!listeningRef.current) {
+              listeningRef.current = true
+              setListening(true)
+            }
+            if (listeningTimeoutRef.current) clearTimeout(listeningTimeoutRef.current)
+            listeningTimeoutRef.current = setTimeout(() => {
+              listeningRef.current = false
+              setListening(false)
+            }, 700)
+          }
+
           const pcm16 = new Int16Array(input.length)
           for (let i = 0; i < input.length; i++) {
             pcm16[i] = Math.max(-32768, Math.min(32767, input[i] * 32768))
@@ -1005,6 +1040,12 @@ function AlphaSurfaceInner({ config }) {
 
     startMic()
     return () => {
+      if (listeningTimeoutRef.current) {
+        clearTimeout(listeningTimeoutRef.current)
+        listeningTimeoutRef.current = null
+      }
+      listeningRef.current = false
+      setListening(false)
       processor?.disconnect(); source?.disconnect()
       stream?.getTracks().forEach(t => t.stop()); audioContext?.close()
     }
@@ -1074,7 +1115,11 @@ function AlphaSurfaceInner({ config }) {
     return () => { clearInterval(interval); clearTimeout(debounce); unsub() }
   }, [ws, editor])
 
-  const status = STATUS[aiStatus] ?? STATUS.disconnected
+  const status = (
+    aiStatus === "idle" && listening && !muted && config.voiceEnabled
+      ? STATUS.listening
+      : (STATUS[aiStatus] ?? STATUS.disconnected)
+  )
 
   return (
     <>
@@ -1092,6 +1137,14 @@ function AlphaSurfaceInner({ config }) {
           const next = !muted
           setMuted(next)
           mutedRef.current = next
+          if (next) {
+            listeningRef.current = false
+            setListening(false)
+            if (listeningTimeoutRef.current) {
+              clearTimeout(listeningTimeoutRef.current)
+              listeningTimeoutRef.current = null
+            }
+          }
           _playback.enabled = !next
           if (!next) activatePlaybackContext()
           if (next) flushAudioPlayback()

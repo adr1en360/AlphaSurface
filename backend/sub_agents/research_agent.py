@@ -99,8 +99,10 @@ def _find_empty_column_origin(col_w: int, col_h: int) -> tuple[int, int]:
     vp = canvas_state.get("viewport", {"x": 0, "y": 0, "w": 1200, "h": 800})
     shapes = canvas_state.get("shapes", [])
 
-    cx = int(vp["x"] + vp["w"] * 0.15)
-    cy = int(vp["y"] + vp["h"] * 0.12)
+    # Keep research cards outside the active focus area, but still nearby.
+    # Place near the right edge rather than far off-canvas.
+    cx = int(vp["x"] + vp["w"] * 0.85 + random.randint(24, 120))
+    cy = int(vp["y"] + vp["h"] * 0.10 + random.randint(-40, 120))
 
     def overlaps(px: int, py: int) -> bool:
         pad = 48

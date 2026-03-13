@@ -10,11 +10,13 @@ from .basic_write import (
     list_canvas_shapes, scan_canvas_text, memory_read, memory_write,
     add_text_to_canvas, add_note_to_canvas, add_geo_to_canvas, add_arrow_to_canvas,
     bind_arrow, add_embed_to_canvas, add_bookmark_to_canvas, move_shape,
-    update_shape, delete_shapes, zoom_to_fit, focus_shape, select_shapes, clear_canvas
+    update_shape, delete_shapes, zoom_to_fit, focus_shape, select_shapes, clear_canvas,
+    undo_last_action, redo_last_action,
 )
 from .dispatch import (
     dispatch_research, dispatch_image_gen, dispatch_youtube,
-    dispatch_super_think, dispatch_document
+    dispatch_super_think, dispatch_document,
+    defer_task, check_deferred_tasks,
 )
 
 ALL_TOOLS = [
@@ -27,7 +29,9 @@ ALL_TOOLS = [
     add_text_to_canvas, add_note_to_canvas, add_geo_to_canvas, add_arrow_to_canvas,
     bind_arrow, add_embed_to_canvas, add_bookmark_to_canvas, move_shape,
     update_shape, delete_shapes, zoom_to_fit, focus_shape, select_shapes, clear_canvas,
-    dispatch_research, dispatch_image_gen, dispatch_youtube, dispatch_super_think, dispatch_document
+    undo_last_action, redo_last_action,
+    dispatch_research, dispatch_image_gen, dispatch_youtube, dispatch_super_think, dispatch_document,
+    defer_task, check_deferred_tasks,
 ]
 
 __all__ = [

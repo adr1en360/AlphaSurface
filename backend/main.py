@@ -57,6 +57,18 @@ CANVAS_PASSTHROUGH_TYPES = {
     "add_image",
     "add_research_card", "add_provocation_card", "focus_artifact",
 }
+CANVAS_PASSTHROUGH_TYPES = {
+    "add_text", "add_note", "add_geo", "add_arrow",
+    "bind_arrow", "add_embed", "add_bookmark",
+    "delete_shapes", "update_shape", "move_shape",
+    "clear_canvas", "zoom_to_fit", "focus_shape",
+    "select_shapes",
+    "align_shapes", "distribute_shapes", "resize_shape",
+    "create_frame", "group_shapes", "label_shape",
+    "add_image",
+    "add_research_card", "add_provocation_card", "focus_artifact",
+    "undo", "redo",
+}
 
 
 def _normalize_canvas_action(action: dict) -> dict:
@@ -325,6 +337,12 @@ async def lifespan(app: FastAPI):
     async def _document_handler(payload: dict):
         await _run_subagent("document", payload, run_document)
     register_handler("document", _document_handler)
+
+    # Register ContinuationAgent (executes deferred scratch pad tasks)
+    from sub_agents.continuation_agent import run as run_continuation
+    async def _continuation_handler(payload: dict):
+        await _run_subagent("continuation", payload, run_continuation)
+    register_handler("continuation", _continuation_handler)
 
     yield
 

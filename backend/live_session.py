@@ -63,6 +63,8 @@ class AlphaSurfaceAgent:
         self._recoverable_live_disconnect = False
         self._audio_live_enabled = True
         self._active_live_model = LIVE_MODEL
+        self._active_session_id = SESSION_ID
+        self._use_text_fallback_once = False
 
         bus = get_event_bus()
         bus.subscribe("provocation_ready", self._on_provocation_ready)
@@ -221,11 +223,18 @@ class AlphaSurfaceAgent:
         reconnect_attempts = 0
         try:
             while True:
-                # Each reconnect attempt always starts in preferred audio mode.
-                # Text-only is a within-session fallback only, not a permanent state.
-                self._audio_live_enabled = True
-                self._active_live_model = LIVE_MODEL
+                # Voice remains the default. On specific protocol errors, we allow
+                # one immediate text fallback attempt, then return to voice default.
+                if self._use_text_fallback_once:
+                    self._audio_live_enabled = False
+                    self._active_live_model = FAST_MODEL
+                    self._use_text_fallback_once = False
+                else:
+                    self._audio_live_enabled = True
+                    self._active_live_model = LIVE_MODEL
+
                 active_session_id = SESSION_ID if self._audio_live_enabled else f"{SESSION_ID}_text"
+                self._active_session_id = active_session_id
                 agent = create_agent(
                     self.mode,
                     self.web_search,
@@ -255,6 +264,7 @@ class AlphaSurfaceAgent:
                     "[Agent] Session open — "
                     f"mode={self.mode} web_search={self.web_search} "
                     f"model={self._active_live_model} audio_live={self._audio_live_enabled} "
+                    f"session_id={self._active_session_id} "
                     f"persona_keys={list(persona.keys())}"
                 )
 
@@ -318,7 +328,7 @@ class AlphaSurfaceAgent:
         else:
             print("[Agent] Ready — text live mode (audio disabled)")
 
-        image_interval = 20.0
+        image_interval = 5.0
         min_image_gap = 1.5
 
         while self.running and self._live_queue is not None:
@@ -350,7 +360,11 @@ class AlphaSurfaceAgent:
                         frame_mime = None
 
                     if frame is not None and frame_mime is not None:
-                        self._live_queue.send_realtime(types.Blob(data=frame, mime_type=frame_mime))
+                        if self._audio_live_enabled:
+                            self._live_queue.send_realtime(types.Blob(data=frame, mime_type=frame_mime))
+                        else:
+                            # Text fallback sessions don't reliably support realtime blobs.
+                            self._send_content([types.Part(inline_data=types.Blob(data=frame, mime_type=frame_mime))])
                         self._last_image_sent = now
 
                         session_warm = (now - self._session_started_at) >= 8.0
@@ -388,7 +402,7 @@ class AlphaSurfaceAgent:
         try:
             async for event in self._runner.run_live(
                 user_id=USER_ID,
-                session_id=SESSION_ID,
+                session_id=self._active_session_id,
                 session=self._session,
                 live_request_queue=self._live_queue,
                 run_config=run_config,
@@ -443,6 +457,10 @@ class AlphaSurfaceAgent:
                 "1007" in msg
                 and "cannot extract voices from a non-audio request" in msg.lower()
             )
+            invalid_argument_mode = (
+                "1007" in msg
+                and "invalid argument" in msg.lower()
+            )
             recoverable = (
                 "1006" in msg
                 or "1011" in msg
@@ -452,13 +470,15 @@ class AlphaSurfaceAgent:
             )
             if unsupported_live_mode and self._audio_live_enabled:
                 print("[Agent] Live audio mode unsupported by current model/account. Falling back to text-only live mode.")
-                self._audio_live_enabled = False
-                self._active_live_model = FAST_MODEL
+                self._use_text_fallback_once = True
                 self._recoverable_live_disconnect = True
             elif voice_mismatch_mode:
                 print("[Agent] Voice config mismatch in text mode. Reconnecting with text model/session only.")
-                self._audio_live_enabled = False
-                self._active_live_model = FAST_MODEL
+                self._use_text_fallback_once = True
+                self._recoverable_live_disconnect = True
+            elif invalid_argument_mode:
+                print("[Agent] Live request rejected (1007 invalid argument). Reconnecting in fallback text mode.")
+                self._use_text_fallback_once = True
                 self._recoverable_live_disconnect = True
             elif recoverable:
                 print(f"[Agent] Receive loop transient disconnect: {msg}")

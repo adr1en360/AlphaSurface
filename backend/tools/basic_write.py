@@ -390,3 +390,15 @@ def select_shapes(shape_ids: list[str]) -> str:
 def clear_canvas() -> str:
     canvas_action_queue.put_nowait({"type": "clear_canvas", "payload": {}})
     return "Canvas cleared"
+
+
+def undo_last_action() -> str:
+    """Undo the most recent canvas action the agent or user just made (Ctrl+Z)."""
+    canvas_action_queue.put_nowait({"type": "undo"})
+    return "Undo applied"
+
+
+def redo_last_action() -> str:
+    """Redo the last undone canvas action (Ctrl+Shift+Z)."""
+    canvas_action_queue.put_nowait({"type": "redo"})
+    return "Redo applied"

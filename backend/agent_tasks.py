@@ -22,11 +22,12 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 import time
+import uuid
 
 
 @dataclass
 class AgentTask:
-    agent: str          # "research" | "youtube" | "image_gen" | "super_think" | "provocation"
+    agent: str          # "research" | "youtube" | "image_gen" | "super_think" | "continuation"
     payload: dict       # agent-specific data e.g. {"query": "Nigeria GDP"}
     source: str         # "live_agent" | "event_bus" — for logging
     priority: int = 1   # lower = higher priority (reserved for future use)
@@ -115,3 +116,67 @@ def dispatch(agent: str, payload: dict, source: str = "live_agent") -> None:
         print(f"[TaskQueue] {source} → {agent}: {payload}")
     except asyncio.QueueFull:
         print(f"[TaskQueue] Queue full — dropped {agent} task")
+
+
+# ── Scratch pad (deferred tasks for the continuation agent) ───────────────────
+# The live model writes here when interrupted mid-task. A background
+# non-live agent picks up each entry and executes the canvas instruction.
+
+_MAX_SCRATCH_PAD = 20
+
+@dataclass
+class DeferredTask:
+    task_id: str
+    instruction: str
+    status: str = "queued"   # queued | running | done | failed
+    added_at: float = field(default_factory=time.time)
+    finished_at: float | None = None
+
+_scratch_pad: list[DeferredTask] = []
+
+
+def add_deferred_task(instruction: str) -> str:
+    """Queue a canvas instruction for the continuation agent. Returns task ID."""
+    task_id = uuid.uuid4().hex[:8]
+    _scratch_pad.append(DeferredTask(task_id=task_id, instruction=instruction))
+    if len(_scratch_pad) > _MAX_SCRATCH_PAD:
+        del _scratch_pad[:-_MAX_SCRATCH_PAD]
+    dispatch("continuation", {"task_id": task_id, "instruction": instruction}, source="live_agent")
+    return task_id
+
+
+def mark_deferred_task(task_id: str, status: str) -> None:
+    """Update task status after continuation agent finishes or fails."""
+    for t in _scratch_pad:
+        if t.task_id == task_id:
+            t.status = status
+            if status in ("done", "failed"):
+                t.finished_at = time.time()
+            break
+
+
+def get_deferred_status_summary() -> str:
+    """Compact human-readable status the live model can read back."""
+    if not _scratch_pad:
+        return "no deferred tasks"
+    queued_tasks = [t for t in _scratch_pad if t.status == "queued"]
+    running_tasks = [t for t in _scratch_pad if t.status == "running"]
+    failed_tasks = [t for t in _scratch_pad if t.status == "failed"]
+    done_tasks = [t for t in _scratch_pad if t.status == "done"]
+
+    queued = len(queued_tasks)
+    running = len(running_tasks)
+    failed = len(failed_tasks)
+    parts = []
+    if queued:  parts.append(f"{queued} queued")
+    if running: parts.append(f"{running} running")
+    if failed:  parts.append(f"{failed} failed")
+    summary = ", ".join(parts) if parts else "all done"
+    if queued_tasks:
+        summary += " | queued_ids=" + ",".join(t.task_id for t in queued_tasks[-3:])
+    if running_tasks:
+        summary += " | running_ids=" + ",".join(t.task_id for t in running_tasks[-3:])
+    if done_tasks:
+        recent = "; ".join(f"{t.task_id}:{t.instruction[:40]}" for t in done_tasks[-3:])
+        summary += f" | completed: {recent}"
+    return summary
