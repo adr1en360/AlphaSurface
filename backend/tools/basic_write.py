@@ -65,6 +65,48 @@ def _normalize_color(color: str, default: str) -> str:
     c = _COLOR_ALIASES.get(c, c)
     return c if c in _VALID_COLORS else default
 
+
+def _find_non_overlapping_xy(x: int, y: int, w: int, h: int) -> tuple[int, int]:
+    shapes = canvas_state.get("shapes", [])
+
+    def overlaps(px: int, py: int) -> bool:
+        pad = 28
+        for s in shapes:
+            if not isinstance(s, dict):
+                continue
+            sx = int(s.get("x", 0))
+            sy = int(s.get("y", 0))
+            sw = int(s.get("w", 220))
+            sh = int(s.get("h", 120))
+            if (
+                px < sx + sw + pad
+                and px + w > sx - pad
+                and py < sy + sh + pad
+                and py + h > sy - pad
+            ):
+                return True
+        return False
+
+    if not overlaps(x, y):
+        return x, y
+
+    for ring in range(1, 12):
+        for dx, dy in [
+            (ring * 260, 0),
+            (0, ring * 160),
+            (-ring * 260, 0),
+            (0, -ring * 160),
+            (ring * 260, ring * 160),
+            (-ring * 260, ring * 160),
+            (ring * 260, -ring * 160),
+            (-ring * 260, -ring * 160),
+        ]:
+            tx, ty = x + dx, y + dy
+            if not overlaps(tx, ty):
+                return tx, ty
+
+    return x + 320, y + 220
+
 def list_canvas_shapes() -> dict:
     return {
         "shape_count": canvas_state["shape_count"],
@@ -125,6 +167,7 @@ def add_text_to_canvas(text: str, x: int, y: int, color: str, size: str) -> str:
     if size not in ["s", "m", "l", "xl"]:
         size = "m"
     normalized_color = _normalize_color(color, "black")
+    x, y = _find_non_overlapping_xy(int(x), int(y), 260, 88)
     canvas_action_queue.put_nowait({
         "type": "add_text",
         "payload": {"text": text, "x": x, "y": y,
@@ -137,6 +180,7 @@ def add_note_to_canvas(text: str, x: int, y: int, color: str, size: str) -> str:
     if size not in ["s", "m", "l", "xl"]:
         size = "m"
     normalized_color = _normalize_color(color, "yellow")
+    x, y = _find_non_overlapping_xy(int(x), int(y), 280, 180)
     canvas_action_queue.put_nowait({
         "type": "add_note",
         "payload": {"text": text, "x": x, "y": y,
@@ -150,11 +194,14 @@ def add_geo_to_canvas(text: str, geo: str, x: int, y: int,
     normalized_geo = _normalize_geo(geo)
     normalized_fill = _normalize_fill(fill)
     normalized_color = _normalize_color(color, "blue")
+    final_w = int(w or 200)
+    final_h = int(h or 120)
+    x, y = _find_non_overlapping_xy(int(x), int(y), final_w, final_h)
     canvas_action_queue.put_nowait({
         "type": "add_geo",
         "payload": {
             "text": text, "geo": normalized_geo,
-            "x": x, "y": y, "w": w or 200, "h": h or 120,
+            "x": x, "y": y, "w": final_w, "h": final_h,
             "color": normalized_color, "fill": normalized_fill
         }
     })
@@ -184,14 +231,18 @@ def bind_arrow(from_shape_id: str, to_shape_id: str,
 
 
 def add_embed_to_canvas(url: str, x: int, y: int, w: int, h: int) -> str:
+    final_w = int(w or 560)
+    final_h = int(h or 315)
+    x, y = _find_non_overlapping_xy(int(x), int(y), final_w, final_h)
     canvas_action_queue.put_nowait({
         "type": "add_embed",
-        "payload": {"url": url, "x": x, "y": y, "w": w or 560, "h": h or 315}
+        "payload": {"url": url, "x": x, "y": y, "w": final_w, "h": final_h}
     })
     return f"Embedded {url}"
 
 
 def add_bookmark_to_canvas(url: str, x: int, y: int) -> str:
+    x, y = _find_non_overlapping_xy(int(x), int(y), 320, 180)
     canvas_action_queue.put_nowait({
         "type": "add_bookmark",
         "payload": {"url": url, "x": x, "y": y}

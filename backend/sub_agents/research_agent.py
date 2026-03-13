@@ -50,9 +50,22 @@ and return a structured summary suitable for placing on a visual canvas.
 Rules:
 - 3 to 5 bullets maximum
 - Each bullet must be a concrete fact or finding, not a vague statement
+- Keep each bullet compact enough to fit on a canvas card; target 1 to 2 short sentences
 - Prefer recent information
 - ALWAYS use the google_search tool to find accurate information. DO NOT guess.
+- Keep each bullet under 220 characters.
 """
+
+_MAX_BULLETS_SHORT = 4
+_MAX_BULLETS_LONG = 3
+_MAX_BULLET_CHARS = 220
+
+
+def _compact_text(text: str, max_chars: int = _MAX_BULLET_CHARS) -> str:
+    cleaned = " ".join((text or "").split())
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[: max_chars - 3].rstrip() + "..."
 
 class ResearchResult(BaseModel):
     title: str = Field(description="Short topic title (max 5 words)")
@@ -139,8 +152,8 @@ async def _place_cluster(broadcast_fn, title: str, bullets: list[str],
     Broadcast canvas actions in a newspaper-column layout (no frame — avoids overlap).
     Shapes are placed as free-floating elements in a clean vertical column.
     """
-    col_w = 480
-    base_bullet_h = 170 if long_form else 120
+    col_w = 420
+    base_bullet_h = 150 if long_form else 108
     bullet_gap = 16
 
     # Dynamic heights prevent text overflow from visually colliding across blocks.
@@ -202,26 +215,24 @@ async def _place_cluster(broadcast_fn, title: str, bullets: list[str],
     })
     await asyncio.sleep(0.04)
 
-    # ── Single body box with all bullets ─────────────────────────────────────
+    # ── Bullet cards ─────────────────────────────────────────────────────────
     body_start_y = by + 108
-    body_text = "\n\n".join(f"{i + 1:02d}. {bullet}" for i, bullet in enumerate(bullets))
-    body_h = max(220, sum(block_heights) // max(1, len(block_heights)) * len(block_heights) // 2 + 140)
-    await broadcast_fn({
-        "type": "add_geo",
-        "payload": {
-            "id": _make_shape_id("res_body"),
-            "x": bx,
-            "y": body_start_y,
-            "w": col_w,
-            "h": body_h,
-            "text": body_text,
-            "color": "blue",
-            "fill": "none",
-            "geo": "rectangle",
-        }
-    })
-    await asyncio.sleep(0.1)
-    cursor_y = body_start_y + body_h
+    cursor_y = body_start_y
+    for i, bullet in enumerate(bullets):
+        bullet_h = block_heights[i]
+        await broadcast_fn({
+            "type": "add_note",
+            "payload": {
+                "id": _make_shape_id("res_bullet"),
+                "x": bx,
+                "y": cursor_y,
+                "text": f"{i + 1}. {bullet}",
+                "color": "light-blue" if i % 2 == 0 else "yellow",
+                "size": "m",
+            }
+        })
+        await asyncio.sleep(0.06)
+        cursor_y += bullet_h + bullet_gap
 
     # ── Source footer ─────────────────────────────────────────────────────────
     footer_y = cursor_y + 12
@@ -345,8 +356,8 @@ async def run_research(payload: dict, broadcast_fn) -> None:
 
         title = result.get("title", query[:40])
         long_form = result.get("format", "short") == "long"
-        max_bullets = 8 if long_form else 5
-        bullets = result.get("bullets", [])[:max_bullets]
+        max_bullets = _MAX_BULLETS_LONG if long_form else _MAX_BULLETS_SHORT
+        bullets = [_compact_text(b) for b in (result.get("bullets", []) or [])[:max_bullets] if isinstance(b, str)]
         source_url = result.get("source_url")
         source_label = result.get("source_label")
 

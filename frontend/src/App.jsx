@@ -32,11 +32,16 @@ function flushAudioPlayback() {
 function handleCanvasMessage(editor, message) {
   if (!editor) return
   const p = message.payload
+  const resolveShapeId = (rawId) => {
+    if (!rawId) return createShapeId()
+    return String(rawId).startsWith("shape:") ? rawId : createShapeId(rawId)
+  }
 
   switch (message.type) {
 
     case "add_text":
       editor.createShape({
+        id: resolveShapeId(p.id),
         type: "text", x: p.x ?? 200, y: p.y ?? 200,
         props: { richText: toRichText(p.text), size: p.size ?? "m", color: p.color ?? "black" }
       })
@@ -44,6 +49,7 @@ function handleCanvasMessage(editor, message) {
 
     case "add_note":
       editor.createShape({
+        id: resolveShapeId(p.id),
         type: "note", x: p.x ?? 300, y: p.y ?? 300,
         props: { richText: toRichText(p.text), color: p.color ?? "yellow", size: p.size ?? "m" }
       })
@@ -51,6 +57,7 @@ function handleCanvasMessage(editor, message) {
 
     case "add_geo":
       editor.createShape({
+        id: resolveShapeId(p.id),
         type: "geo", x: p.x ?? 200, y: p.y ?? 200,
         props: {
           geo: p.geo ?? "rectangle",
@@ -110,6 +117,7 @@ function handleCanvasMessage(editor, message) {
 
     case "add_embed":
       editor.createShape({
+        id: resolveShapeId(p.id),
         type: "embed", x: p.x ?? 200, y: p.y ?? 200,
         props: { url: p.url, w: p.w ?? 560, h: p.h ?? 315 }
       })
@@ -117,6 +125,7 @@ function handleCanvasMessage(editor, message) {
 
     case "add_bookmark":
       editor.createShape({
+        id: resolveShapeId(p.id),
         type: "bookmark", x: p.x ?? 200, y: p.y ?? 200,
         props: { url: p.url, w: 300, h: 160, assetId: null }
       })
@@ -274,6 +283,7 @@ function handleCanvasMessage(editor, message) {
     case "ai_status":
     case "canvas_snapshot":
     case "config_ack":
+    case "task_dashboard":
       break
 
     default:
@@ -987,7 +997,10 @@ export default function App() {
 
   return (
     <div style={{ position: "fixed", inset: 0 }}>
-      <Tldraw persistenceKey="alphasurface">
+      <Tldraw
+        persistenceKey="alphasurface"
+        licenseKey="tldraw-2026-06-21/WyIxVGRUUjl0diIsWyIqIl0sMTYsIjIwMjYtMDYtMjEiXQ.C8bp6SdPUOFAStZunx2d1YuoGxlZnIn0WJzKwXRDeuUmDaO9/YFeN2ax/30/QFJd4nXPOVDfpkzvMUXJIAIU+A"
+      >
         <AlphaSurfaceInner config={config} />
       </Tldraw>
     </div>

@@ -48,6 +48,7 @@ class AlphaSurfaceAgent:
         self._last_vision_trigger: float = 0.0
         self._last_tool_call_time: float = 0.0
         self._last_interrupt_emit: float = 0.0
+        self._session_started_at: float = 0.0
         self._interrupt_emit_cooldown = 0.35
         self._is_speaking = False
         self._vision_trigger_cooldown = 60.0
@@ -198,6 +199,7 @@ class AlphaSurfaceAgent:
                 )
             ),
             response_modalities=[types.Modality.AUDIO],
+            session_resumption=types.SessionResumptionConfig(),
         )
 
     async def _run_session(self):
@@ -230,6 +232,7 @@ class AlphaSurfaceAgent:
                 self._session = session
                 self._live_queue = LiveRequestQueue()
                 self.running = True
+                self._session_started_at = time.monotonic()
                 self._ready.clear()
                 self._recoverable_live_disconnect = False
                 get_event_bus().reset_timers()
@@ -317,21 +320,22 @@ class AlphaSurfaceAgent:
                         self._live_queue.send_realtime(types.Blob(data=frame, mime_type=frame_mime))
                         self._last_image_sent = now
 
-                        agent_quiet = (now - self._last_tool_call_time) >= self._agent_quiet_required
+                        session_warm = (now - self._session_started_at) >= 8.0
+                        required_quiet = self._agent_quiet_required
+                        agent_quiet = (now - self._last_tool_call_time) >= required_quiet
                         cooldown_ok = (now - self._last_vision_trigger) >= self._vision_trigger_cooldown
                         mode_allows_proactive = self.mode == "think"
 
-                        if self._pending_vision_trigger and agent_quiet and cooldown_ok and mode_allows_proactive:
-                            self._send_content([
-                                types.Part(text=(
-                                    "The user has made new changes to the canvas. "
-                                    "Look at what was added or changed. "
-                                    "Only act if there is a specific and immediate opportunity, "
-                                    "such as an unanswered question, an obvious missing connection, "
-                                    "or a direct gap you can fill with one action. "
-                                    "If no clear opportunity exists, stay completely silent."
-                                ))
-                            ])
+                        if self._pending_vision_trigger and session_warm and agent_quiet and cooldown_ok and mode_allows_proactive:
+                            proactive_text = (
+                                "The user has made new changes to the canvas. "
+                                "Look at what was added or changed. "
+                                "Only act if there is a specific and immediate opportunity, "
+                                "such as an unanswered question, an obvious missing connection, "
+                                "or a direct gap you can fill with one action. "
+                                "If no clear opportunity exists, stay completely silent."
+                            )
+                            self._send_content([types.Part(text=proactive_text)])
                             self._last_vision_trigger = now
                             self._pending_vision_trigger = False
                             print("[Agent] Proactive vision trigger fired")
@@ -396,6 +400,8 @@ class AlphaSurfaceAgent:
             msg = str(exc)
             recoverable = (
                 "1006" in msg
+                or "1011" in msg
+                or "deadline expired" in msg.lower()
                 or "keepalive ping timeout" in msg
                 or "abnormal closure" in msg
             )

@@ -13,7 +13,7 @@ To add a new agent: implement a handler, call register_handler().
 import asyncio
 from typing import Callable, Awaitable
 
-from agent_tasks import AgentTask, get_task_queue
+from agent_tasks import AgentTask, get_task_queue, note_started, note_finished
 from event_bus import get_event_bus
 
 # Type for agent handler functions
@@ -60,10 +60,13 @@ async def run_dispatcher() -> None:
 async def _run_handler(task: AgentTask, handler: AgentHandler) -> None:
     """Wraps handler execution with error isolation and cooldown signalling."""
     bus = get_event_bus()
+    note_started(task.agent, task.source, task.payload)
     try:
         bus.signal_agent_acted()  # block event bus from double-firing
         await handler(task.payload)
+        note_finished(task.agent, task.source, task.payload, status="done")
     except Exception as e:
+        note_finished(task.agent, task.source, task.payload, status="failed")
         print(f"[Dispatcher] Handler '{task.agent}' failed: {e}")
         import traceback
         traceback.print_exc()

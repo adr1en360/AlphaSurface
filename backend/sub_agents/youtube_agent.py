@@ -13,6 +13,7 @@ Requires: YOUTUBE_API_KEY in .env
 import asyncio
 import os
 import re
+import time
 from typing import Optional
 
 from googleapiclient.discovery import build
@@ -27,6 +28,8 @@ _MODEL = FAST_MODEL
 _MAX_RESULTS = 5          # candidates to fetch from YouTube API
 _MAX_DURATION_SECS = 5400  # 90 minutes — skip anything longer (livestream/movie)
 _MIN_DURATION_SECS = 60    # 1 minute — skip very short clips
+_RECENT_VIDEO_TTL_SECS = 600
+_recent_video_ids: dict[str, float] = {}
 
 # ── YouTube API client ────────────────────────────────────────────────────────
 
@@ -137,7 +140,7 @@ async def _search_youtube(query: str) -> list[dict]:
         video_ids = [item["id"]["videoId"] for item in items]
         detail_req = yt.videos().list(
             id=",".join(video_ids),
-            part="contentDetails,snippet",
+            part="contentDetails,snippet,status",
         )
         detail_res = await asyncio.to_thread(detail_req.execute)
         details = {v["id"]: v for v in detail_res.get("items", [])}
@@ -148,6 +151,7 @@ async def _search_youtube(query: str) -> list[dict]:
             vid_id = item["id"]["videoId"]
             detail = details.get(vid_id, {})
             content = detail.get("contentDetails", {})
+            status = detail.get("status", {})
             snippet = item["snippet"]
 
             duration_iso = content.get("duration", "")
@@ -162,6 +166,11 @@ async def _search_youtube(query: str) -> list[dict]:
                 continue
             if duration_secs > _MAX_DURATION_SECS:
                 print(f"[YouTubeAgent] Skipping too-long ({_format_duration(duration_secs)}): {snippet['title']}")
+                continue
+
+            # Skip videos that cannot be embedded in iframe.
+            if status.get("embeddable") is False:
+                print(f"[YouTubeAgent] Skipping non-embeddable: {snippet['title']}")
                 continue
 
             videos.append({
@@ -183,6 +192,46 @@ async def _search_youtube(query: str) -> list[dict]:
 
 
 # ── Canvas placement ──────────────────────────────────────────────────────────
+
+def _existing_canvas_video_ids() -> set[str]:
+    ids: set[str] = set()
+    for s in canvas_state.get("shapes", []):
+        if not isinstance(s, dict):
+            continue
+        if s.get("type") != "embed":
+            continue
+        url = str(s.get("url", ""))
+        m = re.search(r"[?&]v=([A-Za-z0-9_-]{6,})", url)
+        if m:
+            ids.add(m.group(1))
+    return ids
+
+
+def _prune_recent_video_ids(now: float) -> None:
+    stale = [vid for vid, ts in _recent_video_ids.items() if (now - ts) > _RECENT_VIDEO_TTL_SECS]
+    for vid in stale:
+        _recent_video_ids.pop(vid, None)
+
+
+def _filter_new_videos(videos: list[dict]) -> list[dict]:
+    now = time.monotonic()
+    _prune_recent_video_ids(now)
+    existing_ids = _existing_canvas_video_ids()
+    fresh: list[dict] = []
+    seen_in_batch: set[str] = set()
+    for video in videos:
+        vid = str(video.get("video_id", ""))
+        if not vid:
+            continue
+        if vid in existing_ids:
+            continue
+        if vid in _recent_video_ids:
+            continue
+        if vid in seen_in_batch:
+            continue
+        fresh.append(video)
+        seen_in_batch.add(vid)
+    return fresh
 
 def _find_empty_video_origin(stack_w: int, stack_h: int) -> tuple[int, int]:
     vp = canvas_state.get("viewport", {"x": 0, "y": 0, "w": 1200, "h": 800})
@@ -291,6 +340,11 @@ async def _place_videos(broadcast_fn, query: str, videos: list[dict]):
         await asyncio.sleep(0.15)
 
     await broadcast_fn({"type": "zoom_to_fit", "payload": {}})
+    now = time.monotonic()
+    for video in videos:
+        vid = str(video.get("video_id", ""))
+        if vid:
+            _recent_video_ids[vid] = now
     print(f"[YouTubeAgent] Placed {len(videos)} video(s) for '{query}'")
 
 
@@ -339,6 +393,7 @@ async def run_youtube(payload: dict, broadcast_fn) -> None:
 
         # 2. YouTube API returns real videos with duration metadata
         videos = await _search_youtube(search_query)
+        videos = _filter_new_videos(videos)
         videos = videos[:requested_count]
 
         if not videos:

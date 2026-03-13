@@ -22,6 +22,7 @@ import json
 import os
 import re
 import time
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
@@ -99,7 +100,6 @@ persona_agent = get_persona_agent()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     subagent_cooldown_until: dict[str, float] = {}
-    subagent_run_lock = asyncio.Lock()
 
     def _retry_after_seconds(error: Exception) -> float:
         msg = str(error)
@@ -112,10 +112,30 @@ async def lifespan(app: FastAPI):
             return 0.0
 
     async def _run_subagent(agent_name: str, payload: dict, run_fn, *extra_args):
+        status_shape_id = f"shape:task_status_{uuid.uuid4().hex[:10]}"
+
+        async def _show_status_note(text: str, color: str = "light-violet") -> None:
+            note_x, note_y = find_empty_note_position()
+            await broadcast({
+                "type": "add_note",
+                "payload": {
+                    "id": status_shape_id,
+                    "x": note_x,
+                    "y": note_y,
+                    "text": text,
+                    "color": color,
+                    "size": "m",
+                },
+            })
+
+        async def _clear_status_note() -> None:
+            await broadcast({"type": "delete_shapes", "payload": {"shapeIds": [status_shape_id]}})
+
         now = time.monotonic()
         cooldown_until = subagent_cooldown_until.get(agent_name, 0.0)
         if cooldown_until > now:
             remaining = int(cooldown_until - now)
+            await _show_status_note(f"{agent_name} cooling down ({remaining}s)", color="light-red")
             await broadcast({
                 "type": "ai_status",
                 "payload": {
@@ -124,63 +144,45 @@ async def lifespan(app: FastAPI):
                     "detail": f"{agent_name} cooling down ({remaining}s)",
                 },
             })
+            await asyncio.sleep(2.0)
+            await _clear_status_note()
             return
 
-        async with subagent_run_lock:
+        await _show_status_note(f"{agent_name} running...")
+        await broadcast({
+            "type": "ai_status",
+            "payload": {
+                "status": "thinking",
+                "subagent": agent_name,
+                "detail": f"{agent_name} running",
+            },
+        })
+        try:
+            await run_fn(payload, broadcast, *extra_args)
             await broadcast({
                 "type": "ai_status",
                 "payload": {
-                    "status": "thinking",
+                    "status": "idle",
                     "subagent": agent_name,
-                    "detail": f"{agent_name} running",
+                    "detail": f"{agent_name} done",
                 },
             })
-            try:
-                await run_fn(payload, broadcast, *extra_args)
-                await broadcast({
-                    "type": "ai_status",
-                    "payload": {
-                        "status": "idle",
-                        "subagent": agent_name,
-                        "detail": f"{agent_name} done",
-                    },
-                })
-            except Exception as e:
-                print(f"[SubAgent:{agent_name}] Error: {e}")
-                msg = str(e)
-                is_rate_limited = "429" in msg or "RESOURCE_EXHAUSTED" in msg
+            await _clear_status_note()
+        except Exception as e:
+            print(f"[SubAgent:{agent_name}] Error: {e}")
+            msg = str(e)
+            is_rate_limited = "429" in msg or "RESOURCE_EXHAUSTED" in msg
 
-                if is_rate_limited:
-                    backoff = max(20.0, _retry_after_seconds(e))
-                    subagent_cooldown_until[agent_name] = time.monotonic() + backoff
-                    note_x, note_y = find_empty_note_position()
-                    await broadcast({
-                        "type": "add_note",
-                        "payload": {
-                            "x": note_x,
-                            "y": note_y,
-                            "text": f"{agent_name} rate-limited. Cooling down for {int(backoff)}s.",
-                            "color": "light-red",
-                            "size": "m",
-                        },
-                    })
-                    await broadcast({
-                        "type": "ai_status",
-                        "payload": {
-                            "status": "idle",
-                            "subagent": agent_name,
-                            "detail": f"{agent_name} rate-limited ({int(backoff)}s)",
-                        },
-                    })
-                    return
-
+            if is_rate_limited:
+                backoff = max(20.0, _retry_after_seconds(e))
+                subagent_cooldown_until[agent_name] = time.monotonic() + backoff
                 note_x, note_y = find_empty_note_position()
                 await broadcast({
                     "type": "add_note",
                     "payload": {
                         "x": note_x,
                         "y": note_y,
-                        "text": f"{agent_name} failed. Check terminal logs.",
+                        "text": f"{agent_name} rate-limited. Cooling down for {int(backoff)}s.",
                         "color": "light-red",
                         "size": "m",
                     },
@@ -190,9 +192,32 @@ async def lifespan(app: FastAPI):
                     "payload": {
                         "status": "idle",
                         "subagent": agent_name,
-                        "detail": f"{agent_name} failed",
+                        "detail": f"{agent_name} rate-limited ({int(backoff)}s)",
                     },
                 })
+                await _clear_status_note()
+                return
+
+            note_x, note_y = find_empty_note_position()
+            await broadcast({
+                "type": "add_note",
+                "payload": {
+                    "x": note_x,
+                    "y": note_y,
+                    "text": f"{agent_name} failed. Check terminal logs.",
+                    "color": "light-red",
+                    "size": "m",
+                },
+            })
+            await broadcast({
+                "type": "ai_status",
+                "payload": {
+                    "status": "idle",
+                    "subagent": agent_name,
+                    "detail": f"{agent_name} failed",
+                },
+            })
+            await _clear_status_note()
 
     # Start event bus monitor
     bus.start()
