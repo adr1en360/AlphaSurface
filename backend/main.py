@@ -294,7 +294,7 @@ async def lifespan(app: FastAPI):
     bus.start()
 
     # Start persona agent (subscribes to bus events)
-    persona_agent.start()
+    # persona_agent.start()  # disabled for demo
 
     # Start agent dispatcher (routes tasks from queue to sub-agents)
     dispatcher_task = asyncio.create_task(run_dispatcher())

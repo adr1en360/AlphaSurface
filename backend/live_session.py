@@ -224,17 +224,11 @@ class AlphaSurfaceAgent:
         reconnect_attempts = 0
         try:
             while True:
-                # Voice remains the default. On specific protocol errors, we allow
-                # one immediate text fallback attempt, then return to voice default.
-                if self._use_text_fallback_once:
-                    self._audio_live_enabled = False
-                    self._active_live_model = FAST_MODEL
-                    self._use_text_fallback_once = False
-                else:
-                    self._audio_live_enabled = True
-                    self._active_live_model = LIVE_MODEL
+                # Always reconnect with audio model — text fallback removed
+                self._audio_live_enabled = True
+                self._active_live_model = LIVE_MODEL
 
-                active_session_id = SESSION_ID if self._audio_live_enabled else f"{SESSION_ID}_text"
+                active_session_id = SESSION_ID
                 self._active_session_id = active_session_id
                 agent = create_agent(
                     self.mode,
@@ -305,10 +299,10 @@ class AlphaSurfaceAgent:
                 except Exception as exc:
                     print(f"[Agent] Session task failed: {exc}")
 
-                if self._recoverable_live_disconnect and self._emit_disconnected_on_exit and reconnect_attempts < 3:
+                if self._recoverable_live_disconnect and self._emit_disconnected_on_exit and reconnect_attempts < 10:
                     reconnect_attempts += 1
-                    wait_seconds = min(6.0, 1.5 * reconnect_attempts)
-                    print(f"[Agent] Live connection dropped (transient). Reconnecting in {wait_seconds:.1f}s...")
+                    wait_seconds = min(10.0, 2.0 * reconnect_attempts)
+                    print(f"[Agent] Live connection dropped. Reconnecting in {wait_seconds:.1f}s...")
                     await asyncio.sleep(wait_seconds)
                     continue
 
@@ -448,48 +442,30 @@ class AlphaSurfaceAgent:
             raise
         except Exception as exc:
             msg = str(exc)
-            unsupported_live_mode = (
-                "1008" in msg
-                and (
-                    "not implemented" in msg.lower()
-                    or "not supported" in msg.lower()
-                    or "not enabled" in msg.lower()
-                )
-            )
-            voice_mismatch_mode = (
-                "1007" in msg
-                and "cannot extract voices from a non-audio request" in msg.lower()
-            )
-            invalid_argument_mode = (
-                "1007" in msg
-                and "invalid argument" in msg.lower()
-            )
+            # All WebSocket errors are treated as transient — always retry with audio model.
+            # Text fallback is removed: gemini-2.5-flash doesn't support bidiGenerateContent
+            # on v1alpha anyway, so the fallback always fails and wastes time.
             recoverable = (
                 "1006" in msg
+                or "1007" in msg
+                or "1008" in msg
                 or "1011" in msg
                 or "deadline expired" in msg.lower()
                 or "keepalive ping timeout" in msg
                 or "abnormal closure" in msg
+                or "not implemented" in msg.lower()
+                or "not supported" in msg.lower()
+                or "invalid argument" in msg.lower()
+                or "requested entity was not found" in msg.lower()
             )
-            if unsupported_live_mode and self._audio_live_enabled:
-                print("[Agent] Live audio mode unsupported by current model/account. Falling back to text-only live mode.")
-                self._use_text_fallback_once = True
-                self._recoverable_live_disconnect = True
-            elif voice_mismatch_mode:
-                print("[Agent] Voice config mismatch in text mode. Reconnecting with text model/session only.")
-                self._use_text_fallback_once = True
-                self._recoverable_live_disconnect = True
-            elif invalid_argument_mode:
-                print("[Agent] Live request rejected (1007 invalid argument). Reconnecting in fallback text mode.")
-                self._use_text_fallback_once = True
-                self._recoverable_live_disconnect = True
-            elif recoverable:
+            if recoverable:
                 print(f"[Agent] Receive loop transient disconnect: {msg}")
                 self._recoverable_live_disconnect = True
             else:
                 print(f"[Agent] Receive loop error: {exc}")
                 import traceback
                 traceback.print_exc()
+                self._recoverable_live_disconnect = True  # retry anyway
             self.running = False
             self._ready.clear()
             if self._live_queue is not None:

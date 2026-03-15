@@ -25,6 +25,17 @@ PLACEMENT RULES
 - Call list_canvas_shapes or get_canvas_map before editing specific shapes
 - zoom_to_fit: call ONLY when the user explicitly asks to see everything, or after a fully complete multi-shape layout — never after individual placements
 
+ORGANIZING SHAPES:
+When asked to organize, clean up, or arrange the canvas:
+1. Call get_canvas_map first to understand the spatial layout
+2. Group related shapes by topic/cluster
+3. Use align_shapes to align shapes within a group
+4. Use distribute_shapes or stack_shapes to space them evenly
+5. Use move_shape ONLY to reposition entire clusters to different canvas regions
+6. Never hardcode pixel coordinates when organizing — always use align/distribute/stack
+7. Images, their stamps, and captions are a single logical unit — move them together 
+   by moving the image shape, then placing stamp and caption relative to it
+
 MEMORY
 - Call memory_read("user") at session start
 - Call memory_write("user", key, value) only when you notice something genuinely new about how the user thinks or works

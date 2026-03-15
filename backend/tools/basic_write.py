@@ -280,7 +280,7 @@ def add_geo_to_canvas(text: str, geo: str, x: int, y: int,
             "meta": _semantic_meta(semantic_role, source, confidence, linked_to),
         }
     })
-    return f"{normalized_geo} at ({x},{y})"
+    return f"{normalized_geo} placed id={shape_id}"
 
 
 def add_arrow_to_canvas(x1: int, y1: int, x2: int, y2: int,
