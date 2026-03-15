@@ -180,7 +180,7 @@ class AlphaSurfaceAgent:
         prompt = (
             "The user has paused — both voice and canvas are still. "
             "Find one idea that deserves a genuine open question. "
-            "Place a single violet sticky note — the question only, nothing else. "
+            "Place a single violet sticky note, the question only or answers to written questions based on what is on the canvas, nothing else. "
             "If nothing genuinely stands out, do nothing. "
             "No audio. No explanation."
         )

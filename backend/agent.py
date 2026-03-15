@@ -16,7 +16,7 @@ from tools import (
     align_shapes, distribute_shapes, stack_shapes,
     zoom_to_fit, memory_read, memory_write,
     dispatch_research, dispatch_image_gen, dispatch_youtube,
-    dispatch_super_think, defer_task, check_deferred_tasks,
+    dispatch_super_think, defer_task, check_deferred_tasks, draw_freehand,
 )
 
 LIVE_AGENT_TOOLS = [
@@ -29,7 +29,7 @@ LIVE_AGENT_TOOLS = [
     align_shapes, distribute_shapes, stack_shapes,
     zoom_to_fit, memory_read, memory_write,
     dispatch_research, dispatch_image_gen, dispatch_youtube,
-    dispatch_super_think, defer_task, check_deferred_tasks,
+    dispatch_super_think, defer_task, check_deferred_tasks, draw_freehand,
 ]
 
 def create_agent(
