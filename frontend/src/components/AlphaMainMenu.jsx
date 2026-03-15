@@ -132,7 +132,7 @@ export function AlphaMainMenu() {
             id: createShapeId(), type: "note",
             x: (vp?.x ?? 0) + Math.max(40, (vp?.w ?? 1000) * 0.25),
             y: (vp?.y ?? 0) + Math.max(40, (vp?.h ?? 700) * 0.2),
-            props: { richText: toRichText(`Uploaded document: ${file.name}\n\nThe agent now has access to this file.`), color: "blue", size: "m" },
+            props: { richText: toRichText(`📄 ${file.name}`), color: "blue", size: "m" },
           })
         }
       } catch (err) { console.error("Upload failed", err) }

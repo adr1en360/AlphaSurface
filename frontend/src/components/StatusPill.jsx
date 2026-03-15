@@ -10,7 +10,7 @@ const STATUS = {
   disconnected: { label: "Offline",    dot: "#6b7280", pulse: false },
 }
 
-export function StatusPill({ aiStatus, listening, muted, config, onToggleMute }) {
+export function StatusPill({ aiStatus, listening, muted, speakerMuted, config, onToggleMute, onToggleSpeaker }) {
   const status = (
     aiStatus === "idle" && listening && !muted && config.voiceEnabled
       ? STATUS.listening
@@ -19,9 +19,7 @@ export function StatusPill({ aiStatus, listening, muted, config, onToggleMute })
 
   return (
     <>
-      <button
-        onClick={onToggleMute}
-        title={muted ? "Click to unmute" : "Click to mute"}
+      <div
         style={{
           position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)",
           zIndex: 9999, display: "flex", alignItems: "center", gap: 0,
@@ -32,7 +30,7 @@ export function StatusPill({ aiStatus, listening, muted, config, onToggleMute })
           boxShadow: "0 2px 12px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.03)",
           fontFamily: "'Inter','Segoe UI',system-ui,sans-serif",
           fontSize: 10, fontWeight: 500, letterSpacing: "0.02em",
-          userSelect: "none", cursor: "pointer", outline: "none", WebkitAppearance: "none",
+          userSelect: "none", outline: "none", WebkitAppearance: "none",
           transition: "border-color 0.25s ease, box-shadow 0.25s ease",
         }}
         onMouseEnter={e => {
@@ -44,6 +42,7 @@ export function StatusPill({ aiStatus, listening, muted, config, onToggleMute })
           e.currentTarget.style.boxShadow = "0 2px 12px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.03)"
         }}
       >
+        {/* Status section */}
         <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px 5px 13px" }}>
           <div style={{
             width: 6, height: 6, borderRadius: "50%",
@@ -59,18 +58,48 @@ export function StatusPill({ aiStatus, listening, muted, config, onToggleMute })
 
         <div style={{ width: 1, height: 12, background: "rgba(255,255,255,0.08)", flexShrink: 0 }} />
 
-        <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 13px 5px 10px" }}>
+        {/* Mode/web/mic section */}
+        <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px" }}>
           <span style={{ color: "rgba(255,255,255,0.48)", textTransform: "capitalize" }}>{config.mode}</span>
           {config.webSearch && (
             <span style={{ color: "#60a5fa", fontSize: 9, fontWeight: 700, letterSpacing: "0.05em", padding: "1px 5px", borderRadius: 4, background: "rgba(96,165,250,0.1)" }}>WEB</span>
           )}
-          {muted || !config.voiceEnabled ? (
-            <span style={{ color: "#f87171", fontSize: 9, fontWeight: 700, letterSpacing: "0.05em", padding: "1px 5px", borderRadius: 4, background: "rgba(248,113,113,0.12)" }}>MIC OFF</span>
-          ) : (
-            <span style={{ color: "#34d399", fontSize: 9, fontWeight: 700, letterSpacing: "0.05em", padding: "1px 5px", borderRadius: 4, background: "rgba(52,211,153,0.1)" }}>MIC ON</span>
-          )}
+          <button
+            onClick={onToggleMute}
+            title={muted ? "Click to unmute mic" : "Click to mute mic"}
+            style={{
+              background: "none", border: "none", padding: 0, margin: 0, cursor: "pointer",
+              outline: "none", display: "flex", alignItems: "center"
+            }}
+          >
+            {muted || !config.voiceEnabled ? (
+              <span style={{ color: "#f87171", fontSize: 9, fontWeight: 700, letterSpacing: "0.05em", padding: "1px 5px", borderRadius: 4, background: "rgba(248,113,113,0.12)" }}>MIC OFF</span>
+            ) : (
+              <span style={{ color: "#34d399", fontSize: 9, fontWeight: 700, letterSpacing: "0.05em", padding: "1px 5px", borderRadius: 4, background: "rgba(52,211,153,0.1)" }}>MIC ON</span>
+            )}
+          </button>
         </div>
-      </button>
+
+        <div style={{ width: 1, height: 12, background: "rgba(255,255,255,0.08)", flexShrink: 0 }} />
+
+        {/* Speaker section */}
+        <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 13px 5px 10px" }}>
+          <button
+            onClick={onToggleSpeaker}
+            title={speakerMuted ? "Click to unmute speaker" : "Click to mute speaker"}
+            style={{
+              background: "none", border: "none", padding: 0, margin: 0, cursor: "pointer",
+              outline: "none", display: "flex", alignItems: "center"
+            }}
+          >
+            {speakerMuted ? (
+              <span style={{ color: "#f87171", fontSize: 9, fontWeight: 700, letterSpacing: "0.05em", padding: "1px 5px", borderRadius: 4, background: "rgba(248,113,113,0.12)" }}>SPEAKER OFF</span>
+            ) : (
+              <span style={{ color: "#34d399", fontSize: 9, fontWeight: 700, letterSpacing: "0.05em", padding: "1px 5px", borderRadius: 4, background: "rgba(52,211,153,0.1)" }}>SPEAKER ON</span>
+            )}
+          </button>
+        </div>
+      </div>
 
       <style>{`
         @keyframes sPulse { 0%,100% { opacity:1; } 50% { opacity:.4; } }

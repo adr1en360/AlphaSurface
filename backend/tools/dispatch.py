@@ -49,6 +49,21 @@ def dispatch_super_think() -> str:
     return "SuperThink analysis started"
 
 
-def dispatch_document(query: str) -> str:
-    dispatch("document", {"query": query}, source="live_agent")
-    return f"Document analysis dispatched: {query}"
+def dispatch_document(query: str, mode: str = "think") -> str:
+        """
+        Dispatch the DocumentAgent to process an uploaded document.
+
+        In Think Mode (default):
+            Places a full spatial map on canvas — title, summary, insights,
+            and open questions as violet provocation notes.
+
+        In Present Mode:
+            Silent. Loads document text into memory only.
+            Places one small green confirmation note.
+            The agent can then answer audience questions grounded in the content.
+
+        query: what to look for in the document, or just the filename
+        mode: "think" | "explain" — defaults to current session mode
+        """
+        dispatch("document", {"query": query, "mode": mode}, source="live_agent")
+        return f"Document analysis dispatched: {query} (mode={mode})"

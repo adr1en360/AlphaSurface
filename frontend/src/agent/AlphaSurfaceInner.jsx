@@ -20,12 +20,14 @@ import { handleCanvasMessage } from "../canvas/canvasActions"
 import { sendCanvasSnapshot } from "../canvas/canvasSnapshot"
 import { StatusPill } from "../components/StatusPill"
 
+
 export function AlphaSurfaceInner({ config }) {
   const editor = useEditor()
   const [ws, setWs] = useState(null)
   const [indicator, setIndicator] = useState(false)
   const [aiStatus, setAiStatus] = useState("disconnected")
   const [muted, setMuted] = useState(false)
+  const [speakerMuted, setSpeakerMuted] = useState(false)
   const [listening, setListening] = useState(false)
 
   const wsRef = useRef(null)
@@ -274,6 +276,7 @@ export function AlphaSurfaceInner({ config }) {
     }
   }, [config.voiceEnabled])
 
+
   // ── Mute toggle ───────────────────────────────────────────────────────────
   const handleToggleMute = () => {
     const next = !muted
@@ -283,6 +286,15 @@ export function AlphaSurfaceInner({ config }) {
       listeningRef.current = false; setListening(false)
       if (listeningTimeoutRef.current) { clearTimeout(listeningTimeoutRef.current); listeningTimeoutRef.current = null }
     }
+    // Mic mute does not affect speaker
+    if (!next) activatePlaybackContext()
+    if (next) flushAudioPlayback()
+  }
+
+  // ── Speaker mute toggle ─────────────────────────────────────────────────--
+  const handleToggleSpeaker = () => {
+    const next = !speakerMuted
+    setSpeakerMuted(next)
     setPlaybackEnabled(!next)
     if (!next) activatePlaybackContext()
     if (next) flushAudioPlayback()
@@ -302,8 +314,10 @@ export function AlphaSurfaceInner({ config }) {
         aiStatus={aiStatus}
         listening={listening}
         muted={muted}
+        speakerMuted={speakerMuted}
         config={config}
         onToggleMute={handleToggleMute}
+        onToggleSpeaker={handleToggleSpeaker}
       />
     </>
   )

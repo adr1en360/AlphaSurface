@@ -19,6 +19,7 @@ from tools import (
     dispatch_super_think, defer_task, check_deferred_tasks, draw_freehand,
 )
 
+from tools import dispatch_document
 LIVE_AGENT_TOOLS = [
     think, todo_update,
     get_viewport_context, list_canvas_shapes, scan_canvas_text,
@@ -30,6 +31,7 @@ LIVE_AGENT_TOOLS = [
     zoom_to_fit, memory_read, memory_write,
     dispatch_research, dispatch_image_gen, dispatch_youtube,
     dispatch_super_think, defer_task, check_deferred_tasks, draw_freehand,
+    dispatch_document,
 ]
 
 def create_agent(
