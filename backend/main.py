@@ -47,26 +47,23 @@ load_dotenv()
 connected_clients: list[WebSocket] = []
 
 CANVAS_PASSTHROUGH_TYPES = {
+    # Basic write
     "add_text", "add_note", "add_geo", "add_arrow",
     "bind_arrow", "add_embed", "add_bookmark",
     "delete_shapes", "update_shape", "move_shape",
     "clear_canvas", "zoom_to_fit", "focus_shape",
     "select_shapes",
+    # Organize
     "align_shapes", "distribute_shapes", "resize_shape",
     "create_frame", "group_shapes", "label_shape",
+    # New organize tools
+    "stack_shapes", "rotate_shapes", "bring_to_front", "send_to_back", "set_viewport",
+    # Freehand
+    "draw_freehand",
+    # Images and cards
     "add_image",
     "add_research_card", "add_provocation_card", "focus_artifact",
-}
-CANVAS_PASSTHROUGH_TYPES = {
-    "add_text", "add_note", "add_geo", "add_arrow",
-    "bind_arrow", "add_embed", "add_bookmark",
-    "delete_shapes", "update_shape", "move_shape",
-    "clear_canvas", "zoom_to_fit", "focus_shape",
-    "select_shapes",
-    "align_shapes", "distribute_shapes", "resize_shape",
-    "create_frame", "group_shapes", "label_shape",
-    "add_image",
-    "add_research_card", "add_provocation_card", "focus_artifact",
+    # Undo/redo
     "undo", "redo",
 }
 
@@ -427,9 +424,67 @@ async def websocket_endpoint(websocket: WebSocket):
             payload: dict = message.get("payload", {})
 
             # ── Canvas shape inventory ────────────────────────────────────
+
             if msg_type == "canvas_snapshot":
-                shapes = payload.get("shapes", [])
-                shape_count = payload.get("shape_count", 0)
+                # Support both old flat format and new three-tier format
+                # Old: payload.shapes = flat list
+                # New: payload.blurryShapes + focusedShapes + peripheralClusters
+                blurry = payload.get("blurryShapes", [])
+                focused = payload.get("focusedShapes", [])
+                if blurry or focused:
+                    # New three-tier format — reconstruct shapes from blurry + focused
+                    # blurryShapes has: shapeId, type, x, y, w, h, text
+                    # focusedShapes has: shapeId, _type, x, y, + full props
+                    shape_map: dict = {}
+                    # Start with blurry (all viewport shapes, lightweight)
+                    for s in blurry:
+                        sid = s.get("shapeId", "")
+                        if not sid:
+                            continue
+                        full_id = f"shape:{sid}" if not sid.startswith("shape:") else sid
+                        shape_map[full_id] = {
+                            "id": full_id,
+                            "type": s.get("type", "unknown"),
+                            "x": s.get("x", 0),
+                            "y": s.get("y", 0),
+                            "w": s.get("w", 200),
+                            "h": s.get("h", 120),
+                            "text": s.get("text", ""),
+                            "color": "black",
+                            "inViewport": True,
+                            "meta": {"semanticRole": "unknown", "source": "unknown",
+                                     "addedBy": "unknown", "confidence": 1.0, "linked_to": []},
+                        }
+                    # Overlay focused shapes (selected/agent-placed — richer data)
+                    for s in focused:
+                        sid = s.get("shapeId", "")
+                        if not sid:
+                            continue
+                        full_id = f"shape:{sid}" if not sid.startswith("shape:") else sid
+                        shape_type = s.get("_type", s.get("type", "unknown"))
+                        existing = shape_map.get(full_id, {})
+                        shape_map[full_id] = {
+                            "id": full_id,
+                            "type": shape_type,
+                            "x": s.get("x", existing.get("x", 0)),
+                            "y": s.get("y", existing.get("y", 0)),
+                            "w": s.get("w", existing.get("w", 200)),
+                            "h": s.get("h", existing.get("h", 120)),
+                            "text": s.get("text", existing.get("text", "")),
+                            "color": s.get("color", existing.get("color", "black")),
+                            "fill": s.get("fill", "none"),
+                            "inViewport": True,
+                            "meta": existing.get("meta", {
+                                "semanticRole": "unknown", "source": "unknown",
+                                "addedBy": "live_agent", "confidence": 1.0, "linked_to": [],
+                            }),
+                        }
+                    shapes = list(shape_map.values())
+                    shape_count = payload.get("shape_count", len(shapes))
+                else:
+                    # Old flat format — backward compat
+                    shapes = payload.get("shapes", [])
+                    shape_count = payload.get("shape_count", len(shapes))
                 viewport = payload.get("viewport", None)
                 selected = payload.get("selectedShapeIds", None)
                 current_page_id = payload.get("currentPageId")
@@ -444,7 +499,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     pages=pages,
                 )
                 if changed:
-                    bus.signal_canvas_change()  # ← event-driven, not timer
+                    bus.signal_canvas_change()
 
             # ── Canvas screenshot → Gemini vision ─────────────────────────
             elif msg_type == "canvas_image":

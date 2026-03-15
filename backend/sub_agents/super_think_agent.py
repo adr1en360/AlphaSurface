@@ -194,7 +194,6 @@ async def _place_super_think(broadcast_fn, sections: dict[str, list[str]]):
     })
     await asyncio.sleep(0.05)
 
-    await broadcast_fn({"type": "zoom_to_fit", "payload": {}})
 
 
 # ── Canvas text extractor ─────────────────────────────────────────────────────

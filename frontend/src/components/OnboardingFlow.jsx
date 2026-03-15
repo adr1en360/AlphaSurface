@@ -1,4 +1,28 @@
 import React, { useState, useEffect, useRef } from "react";
+// Model picker options from addendum
+const MODEL_OPTIONS = [
+  {
+    id: "gemini-2.5-flash-native-audio-preview-12-2025",
+    label: "Gemini 2.5 Flash",
+    badge: "RECOMMENDED",
+    badgeColor: "#06b6d4",
+    desc: "Best voice quality. Native audio. Fastest responses."
+  },
+  {
+    id: "gemini-2.5-flash-preview-native-audio-dialog",
+    label: "Gemini 2.5 Flash Dialog",
+    badge: "STABLE",
+    badgeColor: "#10b981",
+    desc: "More stable. Use if you see connection errors."
+  },
+  {
+    id: "gemini-2.0-flash-live-001",
+    label: "Gemini 2.0 Flash Live",
+    badge: "FALLBACK",
+    badgeColor: "#f59e0b",
+    desc: "Most stable. Lower voice quality. Use if others fail."
+  },
+];
 import { motion, AnimatePresence, useScroll, useTransform, useMotionValue, useSpring } from "framer-motion";
 import { Brain, Presentation, ArrowRight, Github, Twitter, Linkedin, ChevronDown } from "lucide-react";
 
@@ -8,6 +32,8 @@ export function OnboardingFlow({ onComplete }) {
   const [goal, setGoal] = useState("");
   const [audience, setAudience] = useState(null);
   const [uploadedFileName, setUploadedFileName] = useState("");
+  // Model picker state
+  const [selectedModel, setSelectedModel] = useState('gemini-2.5-flash-native-audio-preview-12-2025');
 
   const handleModeSelect = (selectedMode) => {
     setMode(selectedMode);
@@ -23,7 +49,8 @@ export function OnboardingFlow({ onComplete }) {
       uploadedFile: uploadedFileName,
       voiceEnabled: true,
       webSearch: false,
-      mcps: [] 
+      mcps: [],
+      model: selectedModel, // Add selected model to config
     });
   };
 
@@ -324,7 +351,7 @@ export function OnboardingFlow({ onComplete }) {
             transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
             style={{ position: "relative", zIndex: 1, width: "100%", maxWidth: 640, padding: "0 24px", display: "flex", flexDirection: "column", gap: 24 }}
           >
-             <div style={{ textAlign: "center", marginBottom: 24 }}>
+            <div style={{ textAlign: "center", marginBottom: 24 }}>
               <div style={{ fontSize: 32, fontWeight: 700, letterSpacing: "-0.03em", marginBottom: 12 }}>
                 {mode === "explain" ? "Session setup" : "What are you working on?"}
               </div>
@@ -333,8 +360,62 @@ export function OnboardingFlow({ onComplete }) {
               </div>
             </div>
 
+            {/* Model picker (addendum) */}
+            <div style={{ marginTop: 24 }}>
+              <div style={{
+                fontSize: 13, fontWeight: 600, color: "#cbd5e1", marginBottom: 12,
+                marginLeft: 8, textTransform: "uppercase", letterSpacing: "0.05em"
+              }}>
+                Gemini Model
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {MODEL_OPTIONS.map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => setSelectedModel(m.id)}
+                    style={{
+                      background: selectedModel === m.id ? "rgba(6, 182, 212, 0.1)" : "rgba(15, 23, 42, 0.4)",
+                      border: selectedModel === m.id ? `2px solid ${m.badgeColor}` : "1px solid rgba(148,163,184,0.2)",
+                      color: "#f8fafc",
+                      borderRadius: 16,
+                      padding: "16px 20px",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 16,
+                      cursor: "pointer",
+                      width: "100%",
+                      transition: "border 0.2s, background 0.2s"
+                    }}
+                  >
+                    {/* Radio dot */}
+                    <div style={{
+                      width: 16, height: 16, borderRadius: "50%", flexShrink: 0,
+                      border: selectedModel === m.id ? `6px solid ${m.badgeColor}` : "2px solid #64748b",
+                      background: selectedModel === m.id ? m.badgeColor : "transparent",
+                      marginRight: 12,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                    }}>
+                      {selectedModel === m.id && (
+                        <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} />
+                      )}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                        <span style={{ fontWeight: 600, fontSize: 16 }}>{m.label}</span>
+                        <span style={{
+                          fontSize: 11, fontWeight: 700, color: m.badgeColor, background: "rgba(6,182,212,0.08)",
+                          borderRadius: 8, padding: "2px 8px", marginLeft: 4, letterSpacing: "0.04em"
+                        }}>{m.badge}</span>
+                      </div>
+                      <div style={{ fontSize: 12, color: "#64748b" }}>{m.desc}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div style={{ position: "relative" }}>
-               <input
+              <input
                 autoFocus
                 value={goal}
                 onChange={(e) => setGoal(e.target.value)}
@@ -366,7 +447,6 @@ export function OnboardingFlow({ onComplete }) {
                   e.target.style.boxShadow = "inset 0 2px 4px rgba(0,0,0,0.2), 0 20px 40px rgba(0,0,0,0.4)";
                 }}
               />
-              
               <motion.button
                 initial={{ opacity: 0, scale: 0.8 }}
                 animate={{ opacity: goal.length > 0 ? 1 : 0, scale: goal.length > 0 ? 1 : 0.8 }}

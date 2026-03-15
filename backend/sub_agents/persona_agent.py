@@ -42,9 +42,14 @@ import tools as canvas_tools
 USER_ID = "user"
 
 
+
+# NEW - explicit fields, no additionalProperties
 class PersonaUpdates(BaseModel):
-    updates: dict[str, str] = Field(description="Dictionary of persona field updates. Keys from tracked fields.")
-    append_traits: list[str] = Field(description="List of specific, behavioural traits to append.", default_factory=list)
+    communication_style: str = Field(default="", description="verbose | concise | visual | textual")
+    domain_interests: str = Field(default="", description="topics the user works on")
+    interaction_preference: str = Field(default="", description="what user wants from AI")
+    provocation_style: str = Field(default="", description="specific | abstract | frequent | rare")
+    append_traits: list[str] = Field(default_factory=list, description="specific observed behaviours to append")
 
 
 _PERSONA_SYSTEM = """
@@ -138,13 +143,17 @@ class PersonaAgent:
                     instruction=_PERSONA_SYSTEM,
                     output_schema=PersonaUpdates,
                     output_key="persona_updates",
+                    disallow_transfer_to_parent=True,
+                    disallow_transfer_to_peers=True,
                     generate_content_config=types.GenerateContentConfig(
                         temperature=0.3,
                     ),
                 )
 
                 await self._session_service.create_session(
-                    app_name="alphasurface", user_id=USER_ID, session_id="persona_session"
+                    app_name="alphasurface",
+                    user_id=USER_ID,
+                    session_id="persona_session"
                 )
 
                 runner = Runner(
@@ -162,14 +171,23 @@ class PersonaAgent:
                 ):
                     pass # We just want the final state
                 
-                session = await self._session_service.get_session("alphasurface", USER_ID, "persona_session")
+                session = await self._session_service.get_session(
+                    app_name="alphasurface",
+                    user_id=USER_ID,
+                    session_id="persona_session"
+                )
                 if not session or "persona_updates" not in session.state:
                     return
 
-                parsed: dict = session.state["persona_updates"]
 
-                updates = parsed.get("updates", {})
-                new_traits = parsed.get("append_traits", [])
+                parsed = session.state["persona_updates"]
+                updates = {}
+                for field in ["communication_style", "domain_interests", 
+                              "interaction_preference", "provocation_style"]:
+                    val = getattr(parsed, field, "").strip() if hasattr(parsed, field) else parsed.get(field, "").strip()
+                    if val:
+                        updates[field] = val
+                new_traits = getattr(parsed, "append_traits", []) if hasattr(parsed, "append_traits") else parsed.get("append_traits", [])
 
                 if updates or new_traits:
                     if new_traits:
@@ -192,16 +210,6 @@ class PersonaAgent:
 
             except Exception as e:
                 print(f"[PersonaAgent] Analysis error: {e}")
-                try:
-                    canvas_tools.add_note_to_canvas(
-                        text=f"PersonaAgent failed: {str(e)[:120]}",
-                        x=40,
-                        y=140,
-                        color="light-red",
-                        size="m",
-                    )
-                except Exception:
-                    pass
 
     async def increment_session_count(self):
         """Call this at session start to track how many sessions the user has had."""

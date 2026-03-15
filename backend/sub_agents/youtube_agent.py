@@ -287,18 +287,20 @@ def _make_shape_id(prefix: str) -> str:
 async def _place_videos(broadcast_fn, query: str, videos: list[dict]):
     """Place each video as an iframe embed with a title label above it."""
     embed_w, embed_h = 560, 315
-    gap = 90
-    stack_h = len(videos) * (embed_h + gap) + 60
+    title_h = 40    # height reserved for title text above each embed
+    gap = 60        # gap between bottom of one embed and title of next
+    slot_h = title_h + embed_h + gap
+    stack_h = len(videos) * slot_h + 60
     bx, by = _find_empty_video_origin(embed_w + 40, stack_h)
 
-    # Label
+    # Stamp label at top
     stamp_id = _make_shape_id("yt_stamp")
     await broadcast_fn({
         "type": "add_text",
         "payload": {
             "id": stamp_id,
             "x": bx,
-            "y": by - 32,
+            "y": by,
             "text": f"▶ YouTubeAgent · {query}",
             "size": "s",
             "color": "red",
@@ -307,16 +309,16 @@ async def _place_videos(broadcast_fn, query: str, videos: list[dict]):
     await asyncio.sleep(0.05)
 
     for i, video in enumerate(videos):
-        embed_y = by + i * (embed_h + gap)
+        slot_y = by + 40 + i * slot_h  # 40px clearance below stamp
 
-        # Title + duration above embed
+        # Title above embed
         title_id = _make_shape_id(f"yt_title_{i}")
         await broadcast_fn({
             "type": "add_text",
             "payload": {
                 "id": title_id,
                 "x": bx,
-                "y": embed_y - 24,
+                "y": slot_y,
                 "text": f"{video['title']}  [{video['duration_label']}]  · {video['channel']}",
                 "size": "s",
                 "color": "grey",
@@ -324,14 +326,14 @@ async def _place_videos(broadcast_fn, query: str, videos: list[dict]):
         })
         await asyncio.sleep(0.05)
 
-        # Embed
+        # Embed below title
         embed_id = _make_shape_id(f"yt_embed_{i}")
         await broadcast_fn({
             "type": "add_embed",
             "payload": {
                 "id": embed_id,
                 "x": bx,
-                "y": embed_y,
+                "y": slot_y + title_h,
                 "url": video["url"],
                 "w": embed_w,
                 "h": embed_h,
@@ -339,7 +341,6 @@ async def _place_videos(broadcast_fn, query: str, videos: list[dict]):
         })
         await asyncio.sleep(0.15)
 
-    await broadcast_fn({"type": "zoom_to_fit", "payload": {}})
     now = time.monotonic()
     for video in videos:
         vid = str(video.get("video_id", ""))

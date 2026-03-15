@@ -7,6 +7,7 @@ import os
 import time
 from typing import Awaitable, Callable
 
+
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.runners import Runner
@@ -275,6 +276,8 @@ class AlphaSurfaceAgent:
                 self._ready.clear()
                 self._recoverable_live_disconnect = False
                 get_event_bus().reset_timers()
+                from agent_tasks import reset_session_state
+                reset_session_state()
 
                 _lq = self._live_queue
 
@@ -328,8 +331,8 @@ class AlphaSurfaceAgent:
         else:
             print("[Agent] Ready — text live mode (audio disabled)")
 
-        image_interval = 5.0
-        min_image_gap = 1.5
+        image_interval = 2.0   # was 5.0
+        min_image_gap = 0.8    # was 1.5
 
         while self.running and self._live_queue is not None:
             try:

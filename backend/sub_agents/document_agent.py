@@ -184,7 +184,6 @@ async def _place_document_cluster(broadcast_fn, result: DocumentResult):
         })
         await asyncio.sleep(0.05)
 
-    await broadcast_fn({"type": "zoom_to_fit", "payload": {}})
 
 
 # ── Main Handler ──────────────────────────────────────────────────────────────

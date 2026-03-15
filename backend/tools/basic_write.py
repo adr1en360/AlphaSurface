@@ -367,16 +367,35 @@ def delete_shapes(shape_ids: list[str]) -> str:
 
 
 def zoom_to_fit() -> str:
-    canvas_action_queue.put_nowait({"type": "zoom_to_fit", "payload": {}})
-    return "Zoomed to fit"
+        """
+        Zoom the canvas viewport so ALL shapes are visible at once.
+
+        ONLY call this when:
+        - The user explicitly says "zoom out", "show everything", "fit to screen"
+        - A fully complete multi-shape layout has just been placed (e.g. a complete diagram with 5+ shapes)
+        - After a sub-agent finishes placing a large cluster
+
+        DO NOT call this:
+        - After placing a single shape
+        - After placing 2-3 shapes
+        - Repeatedly during a sequence of placements
+        - As a reflex after every canvas action
+        """
+        canvas_action_queue.put_nowait({"type": "zoom_to_fit", "payload": {}})
+        return "Zoomed to fit"
 
 
 def focus_shape(shape_id: str) -> str:
-    canvas_action_queue.put_nowait({
-        "type": "focus_shape",
-        "payload": {"shapeId": shape_id}
-    })
-    return f"Focused on {shape_id}"
+        """
+        Zoom the viewport to center on a specific shape and select it.
+        Use when the user says "show me X", "go to X", or "focus on X".
+        Do not use speculatively — only when navigation is genuinely needed.
+        """
+        canvas_action_queue.put_nowait({
+            "type": "focus_shape",
+            "payload": {"shapeId": shape_id}
+        })
+        return f"Focused on {shape_id}"
 
 
 def select_shapes(shape_ids: list[str]) -> str:
