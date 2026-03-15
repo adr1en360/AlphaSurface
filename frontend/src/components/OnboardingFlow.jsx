@@ -1,659 +1,533 @@
 import React, { useState, useEffect, useRef } from "react";
-// Model picker options from addendum
-const MODEL_OPTIONS = [
-  {
-    id: "gemini-2.5-flash-native-audio-preview-12-2025",
-    label: "Gemini 2.5 Flash",
-    badge: "RECOMMENDED",
-    badgeColor: "#06b6d4",
-    desc: "Best voice quality. Native audio. Fastest responses."
-  },
-  {
-    id: "gemini-2.5-flash-preview-native-audio-dialog",
-    label: "Gemini 2.5 Flash Dialog",
-    badge: "STABLE",
-    badgeColor: "#10b981",
-    desc: "More stable. Use if you see connection errors."
-  },
-  {
-    id: "gemini-2.0-flash-live-001",
-    label: "Gemini 2.0 Flash Live",
-    badge: "FALLBACK",
-    badgeColor: "#f59e0b",
-    desc: "Most stable. Lower voice quality. Use if others fail."
-  },
-];
-import { motion, AnimatePresence, useScroll, useTransform, useMotionValue, useSpring } from "framer-motion";
-import { Brain, Presentation, ArrowRight, Github, Twitter, Linkedin, ChevronDown } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Brain, Presentation, ArrowRight, Github, Twitter, Linkedin } from "lucide-react";
+
+const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@300;400;500&display=swap');`;
+
+const SNAP = { duration: 0.3, ease: [0.4, 0, 0.2, 1] };
+const RISE = { duration: 0.55, ease: [0.16, 1, 0.3, 1] };
 
 export function OnboardingFlow({ onComplete }) {
-  const [step, setStep] = useState(0); // 0 = Welcome, 1 = Mode, 2 = Goal
+  const [step, setStep] = useState(0);
   const [mode, setMode] = useState(null);
   const [goal, setGoal] = useState("");
   const [audience, setAudience] = useState(null);
   const [uploadedFileName, setUploadedFileName] = useState("");
-  // Model picker state
-  const [selectedModel, setSelectedModel] = useState('gemini-2.5-flash-native-audio-preview-12-2025');
+  const [uploading, setUploading] = useState(false);
+  const [hovered, setHovered] = useState(null);
+  const inputRef = useRef(null);
 
-  const handleModeSelect = (selectedMode) => {
-    setMode(selectedMode);
-    setStep(2);
-  };
+  useEffect(() => {
+    if (step === 2) setTimeout(() => inputRef.current?.focus(), 300);
+  }, [step]);
 
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape" && step > 0) setStep(s => s - 1); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [step]);
+
+  const handleModeSelect = (m) => { setMode(m); setStep(2); };
   const handleFinish = () => {
-    localStorage.setItem("alpha_onboarding_complete", "true");
-    onComplete({
-      mode: mode,
-      goal: goal.trim(),
-      audience: audience,
-      uploadedFile: uploadedFileName,
-      voiceEnabled: true,
-      webSearch: false,
-      mcps: [],
-      model: selectedModel, // Add selected model to config
-    });
+    onComplete({ mode, goal: goal.trim(), audience, uploadedFile: uploadedFileName, voiceEnabled: true, webSearch: false, mcps: [] });
   };
 
-  const handleUploadClick = () => {
+  const handleUpload = () => {
     const input = Object.assign(document.createElement("input"), { type: "file", accept: ".pdf,.doc,.docx,.txt" });
     input.onchange = async (e) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      const formData = new FormData();
-      formData.append("file", file);
+      setUploading(true);
+      const fd = new FormData();
+      fd.append("file", file);
       try {
-        const res = await fetch("/api/upload", {
-          method: "POST",
-          body: formData
-        });
+        const res = await fetch("/api/upload", { method: "POST", body: fd });
         const data = await res.json();
-        if (data.status === "success") {
-          setUploadedFileName(file.name);
-        }
-      } catch (err) {
-        console.error("Upload failed", err);
-      }
+        if (data.status === "success") setUploadedFileName(file.name);
+      } catch { }
+      finally { setUploading(false); }
     };
     input.click();
   };
 
-  // Mouse tracking for reactive gradient
-  const mouseX = useMotionValue(0);
-  const mouseY = useMotionValue(0);
-  
-  // Smooth out the mouse values
-  const smoothX = useSpring(mouseX, { damping: 50, stiffness: 400 });
-  const smoothY = useSpring(mouseY, { damping: 50, stiffness: 400 });
-
-  // Top-level transforms (React Hooks cannot be called conditionally inside JSX)
-  const glow1X = useTransform(smoothX, [-1, 1], ["-60%", "-40%"]);
-  const glow1Y = useTransform(smoothY, [-1, 1], ["-60%", "-40%"]);
-  const glow2X = useTransform(smoothX, [-1, 1], ["-40%", "-60%"]);
-  const glow2Y = useTransform(smoothY, [-1, 1], ["-40%", "-60%"]);
-  
-  const logoRotateX = useTransform(smoothY, [-1, 1], [15, -15]);
-  const logoRotateY = useTransform(smoothX, [-1, 1], [-15, 15]);
-
-  useEffect(() => {
-    const handleMouseMove = (e) => {
-      // Normalize to -1 to 1 based on window size
-      mouseX.set((e.clientX / window.innerWidth) * 2 - 1);
-      mouseY.set((e.clientY / window.innerHeight) * 2 - 1);
-    };
-    window.addEventListener("mousemove", handleMouseMove);
-    return () => window.removeEventListener("mousemove", handleMouseMove);
-  }, [mouseX, mouseY]);
-
-  // Handle wheel scrolling to transition from step 0 to 1
-  useEffect(() => {
-    const handleWheel = (e) => {
-      if (step === 0 && e.deltaY > 50) {
-        setStep(1);
-      } else if (step === 1 && e.deltaY < -50) {
-        // Optional: scroll back up to welcome
-        setStep(0);
-      }
-    };
-    window.addEventListener("wheel", handleWheel);
-    return () => window.removeEventListener("wheel", handleWheel);
-  }, [step]);
-
   return (
-    <div style={{
-      position: "fixed", inset: 0,
-      background: "#020617", // Very dark base
-      display: "flex", alignItems: "center", justifyContent: "center",
-      fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif",
-      color: "#e2e8f0",
-      zIndex: 9999,
-      overflow: "hidden"
-    }}>
-      
-      {/* ── Reactive Toodle / Background Glow Layer ── */}
-      <div style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" }}>
-        {/* Glow 1: Cyan/Teal tracking mouse */}
-        <motion.div style={{
-          position: "absolute", top: "50%", left: "50%", 
-          width: "80vw", height: "80vw",
-          background: "radial-gradient(circle, rgba(6,182,212,0.15) 0%, transparent 60%)",
-          x: glow1X,
-          y: glow1Y,
-          filter: "blur(60px)",
-          opacity: step === 0 ? 1 : 0.3,
-          transition: "opacity 1s ease"
-        }} />
-        
-        {/* Glow 2: Magenta/Pink contrasting motion */}
-        <motion.div style={{
-          position: "absolute", top: "50%", left: "50%", 
-          width: "70vw", height: "70vw",
-          background: "radial-gradient(circle, rgba(217,70,239,0.12) 0%, transparent 60%)",
-          x: glow2X,
-          y: glow2Y,
-          filter: "blur(80px)",
-          opacity: step === 0 ? 1 : 0.4,
-          transition: "opacity 1s ease"
-        }} />
+    <>
+      <style>{`
+        ${FONTS}
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        :root {
+          --bg: #030507;
+          --surface: rgba(255,255,255,0.035);
+          --surface-hover: rgba(255,255,255,0.06);
+          --border: rgba(255,255,255,0.08);
+          --border-glow: rgba(0,212,245,0.3);
+          --cyan: #00d4f5;
+          --violet: #7c5cbf;
+          --rose: #e8547a;
+          --text: #f0f2f5;
+          --muted: rgba(240,242,245,0.45);
+          --muted2: rgba(240,242,245,0.25);
+        }
+        .alpha-root {
+          position: fixed; inset: 0;
+          background: var(--bg);
+          font-family: 'Outfit', sans-serif;
+          color: var(--text);
+          overflow: hidden;
+        }
+        .mono { font-family: 'JetBrains Mono', monospace; }
 
-        {/* Glow 3: Deep Blue base */}
-        <motion.div style={{
-          position: "absolute", top: "50%", left: "50%", 
-          width: "100vw", height: "100vw",
-          background: "radial-gradient(circle, rgba(59,130,246,0.08) 0%, transparent 70%)",
-          x: "-50%", y: "-50%",
-          filter: "blur(100px)",
-        }} />
-      </div>
+        /* Noise overlay */
+        .alpha-root::before {
+          content: '';
+          position: fixed; inset: 0;
+          background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+          pointer-events: none; z-index: 0; opacity: 0.4;
+        }
 
-      <AnimatePresence mode="wait">
-        {step === 0 && (
-          <motion.div
-            key="step0"
-            initial={{ opacity: 0, filter: "blur(0px)" }}
-            animate={{ opacity: 1, filter: "blur(0px)" }}
-            exit={{ opacity: 0, y: -60, filter: "blur(15px)" }}
-            transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
-            style={{ 
-              position: "relative", zIndex: 1, width: "100%", height: "100%", 
-              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "space-between",
-              padding: "8vh 24px"
-            }}
-          >
-            {/* Top / Logo Area */}
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", width: "100%" }}>
-              <motion.div
-                initial={{ scale: 0.8, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                transition={{ duration: 1.2, ease: "easeOut", delay: 0.2 }}
-                style={{
-                  position: "relative",
-                  marginBottom: 40
-                }}
-              >
-                {/* Reactive logo container */}
-                <motion.div style={{
-                  rotateX: logoRotateX,
-                  rotateY: logoRotateY,
-                  perspective: 1000
-                }}>
+        /* Glass card */
+        .glass {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          backdrop-filter: blur(24px);
+          -webkit-backdrop-filter: blur(24px);
+          border-radius: 20px;
+          transition: border-color 0.3s, background 0.3s, box-shadow 0.3s;
+        }
+        .glass:hover {
+          border-color: rgba(255,255,255,0.14);
+          background: var(--surface-hover);
+        }
+
+        /* Mode card iridescent border on hover */
+        .mode-card-think:hover {
+          border-color: rgba(124,92,191,0.5) !important;
+          box-shadow: 0 0 40px rgba(124,92,191,0.12), inset 0 1px 0 rgba(255,255,255,0.06) !important;
+        }
+        .mode-card-present:hover {
+          border-color: rgba(0,212,245,0.5) !important;
+          box-shadow: 0 0 40px rgba(0,212,245,0.12), inset 0 1px 0 rgba(255,255,255,0.06) !important;
+        }
+
+        /* Tag buttons */
+        .tag {
+          padding: 9px 20px; border-radius: 100px;
+          font-size: 13px; font-weight: 500; cursor: pointer;
+          transition: all 0.18s;
+          border: 1px solid var(--border);
+          background: transparent; color: var(--muted);
+          font-family: 'Outfit', sans-serif;
+        }
+        .tag:hover { border-color: rgba(255,255,255,0.2); color: var(--text); }
+        .tag.active {
+          background: rgba(0,212,245,0.1);
+          border-color: rgba(0,212,245,0.4);
+          color: var(--cyan);
+        }
+
+        /* Input */
+        .alpha-input {
+          width: 100%;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid var(--border);
+          border-radius: 14px;
+          padding: 18px 64px 18px 22px;
+          font-size: 16px; font-family: 'Outfit', sans-serif;
+          color: var(--text);
+          transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .alpha-input:focus {
+          border-color: rgba(0,212,245,0.4);
+          box-shadow: 0 0 0 3px rgba(0,212,245,0.08);
+          outline: none;
+        }
+        .alpha-input::placeholder { color: var(--muted2); }
+
+        /* Upload zone */
+        .upload-zone {
+          width: 100%; border: 1.5px dashed rgba(255,255,255,0.1);
+          border-radius: 14px; padding: 22px 24px;
+          background: transparent; cursor: pointer;
+          transition: border-color 0.2s, background 0.2s;
+          text-align: left; font-family: 'Outfit', sans-serif;
+          display: flex; align-items: center; gap: 16px;
+        }
+        .upload-zone:hover {
+          border-color: rgba(0,212,245,0.3);
+          background: rgba(0,212,245,0.04);
+        }
+        .upload-success {
+          border: 1px solid rgba(74,220,128,0.3);
+          border-radius: 14px; padding: 16px 20px;
+          background: rgba(74,220,128,0.06);
+          display: flex; align-items: center; justify-content: space-between; gap: 12px;
+        }
+
+        /* Primary button */
+        .btn-primary {
+          display: inline-flex; align-items: center; gap: 10px;
+          background: linear-gradient(135deg, rgba(0,212,245,0.15), rgba(124,92,191,0.15));
+          border: 1px solid rgba(0,212,245,0.3);
+          border-radius: 12px; padding: 16px 32px;
+          font-size: 15px; font-weight: 600; font-family: 'Outfit', sans-serif;
+          color: var(--text); cursor: pointer;
+          transition: all 0.2s;
+          box-shadow: 0 0 24px rgba(0,212,245,0.08);
+        }
+        .btn-primary:hover {
+          background: linear-gradient(135deg, rgba(0,212,245,0.22), rgba(124,92,191,0.22));
+          border-color: rgba(0,212,245,0.5);
+          box-shadow: 0 0 40px rgba(0,212,245,0.15);
+          transform: translateY(-1px);
+        }
+
+        /* Back link */
+        .back-link {
+          background: none; border: none;
+          color: var(--muted); font-size: 13px;
+          cursor: pointer; font-family: 'JetBrains Mono', monospace;
+          letter-spacing: 0.04em; transition: color 0.15s;
+        }
+        .back-link:hover { color: var(--text); }
+
+        ::-webkit-scrollbar { display: none; }
+      `}</style>
+
+      <div className="alpha-root">
+
+        {/* ── Ambient background glows ── */}
+        <div style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 0 }}>
+          {/* Cyan glow top-left */}
+          <div style={{
+            position: "absolute", top: "-20%", left: "-10%",
+            width: "60vw", height: "60vw",
+            background: "radial-gradient(circle, rgba(0,212,245,0.07) 0%, transparent 65%)",
+            filter: "blur(60px)"
+          }} />
+          {/* Violet glow center */}
+          <div style={{
+            position: "absolute", top: "20%", left: "30%",
+            width: "50vw", height: "50vw",
+            background: "radial-gradient(circle, rgba(124,92,191,0.06) 0%, transparent 65%)",
+            filter: "blur(80px)"
+          }} />
+          {/* Rose glow bottom-right */}
+          <div style={{
+            position: "absolute", bottom: "-10%", right: "-10%",
+            width: "45vw", height: "45vw",
+            background: "radial-gradient(circle, rgba(232,84,122,0.06) 0%, transparent 65%)",
+            filter: "blur(70px)"
+          }} />
+        </div>
+
+        <AnimatePresence mode="wait">
+
+          {/* ══ STEP 0: WELCOME ══ */}
+          {step === 0 && (
+            <motion.div key="s0"
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              transition={SNAP}
+              style={{ position: "absolute", inset: 0, zIndex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "6vh 8vw" }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", maxWidth: 700, width: "100%" }}>
+
+                {/* Logo */}
+                <motion.div
+                  initial={{ scale: 0.85, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+                  transition={{ ...RISE, delay: 0.1 }}
+                  style={{ marginBottom: 40, position: "relative" }}
+                >
                   <motion.div
-                    animate={{ y: [0, -15, 0] }}
-                    transition={{ duration: 6, ease: "easeInOut", repeat: Infinity }}
+                    animate={{ y: [0, -12, 0] }}
+                    transition={{ duration: 5, ease: "easeInOut", repeat: Infinity }}
                   >
-                    <img 
-                      src="/logo.png" 
-                      alt="AlphaSurface Logo" 
-                      style={{ 
-                        width: 240, height: "auto", 
-                        filter: "drop-shadow(0 20px 40px rgba(6,182,212,0.4)) drop-shadow(0 0 80px rgba(217,70,239,0.3))" 
-                      }} 
+                    <img src="/logo.png" alt="AlphaSurface"
+                      style={{
+                        width: 140, height: 140, objectFit: "contain",
+                        filter: "drop-shadow(0 0 40px rgba(0,212,245,0.35)) drop-shadow(0 0 80px rgba(124,92,191,0.25))"
+                      }}
                     />
                   </motion.div>
+                  {/* Glow ring */}
+                  <div style={{
+                    position: "absolute", inset: -20,
+                    background: "radial-gradient(circle, rgba(0,212,245,0.08) 0%, transparent 70%)",
+                    borderRadius: "50%", pointerEvents: "none"
+                  }} />
                 </motion.div>
-              </motion.div>
 
-              <motion.div 
-                initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6, duration: 0.8 }}
-                style={{ textAlign: "center", maxWidth: 600 }}
-              >
-                <h1 style={{ 
-                  fontSize: 56, fontWeight: 800, letterSpacing: "-0.04em", margin: "0 0 16px 0",
-                  background: "linear-gradient(135deg, #fff 0%, #cbd5e1 100%)",
-                  WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent"
-                }}>
-                  AlphaSurface
-                </h1>
-                <p style={{ fontSize: 20, color: "#94a3b8", fontWeight: 400, margin: 0, lineHeight: 1.5 }}>
-                  AI that thinks alongside you — not for you. <br />
-                  A spatial workspace for unbounded exploration.
-                </p>
-              </motion.div>
-            </div>
+                {/* Wordmark */}
+                <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ ...RISE, delay: 0.2 }}>
+                  <div style={{ fontFamily: "'JetBrains Mono'", fontSize: 11, letterSpacing: "0.2em", textTransform: "uppercase", color: "var(--cyan)", marginBottom: 16, opacity: 0.8 }}>
+                    ◆ Spatial AI Workspace
+                  </div>
+                  <h1 style={{ fontSize: "clamp(52px, 9vw, 88px)", fontWeight: 800, letterSpacing: "-0.04em", lineHeight: 0.95, marginBottom: 24 }}>
+                    Alpha
+                    <span style={{
+                      background: "linear-gradient(135deg, var(--cyan), var(--violet), var(--rose))",
+                      WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+                      backgroundClip: "text"
+                    }}>Surface</span>
+                  </h1>
+                  <p style={{ fontSize: 18, color: "var(--muted)", lineHeight: 1.65, marginBottom: 48, maxWidth: 480, margin: "0 auto 48px" }}>
+                    AI that thinks alongside you — not for you.<br />
+                    Voice-first. Spatially aware. Genuinely curious.
+                  </p>
+                </motion.div>
 
-            {/* Bottom / Social Cards */}
-            <motion.div 
-              initial={{ opacity: 0, y: 40 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.8, duration: 0.8 }}
-              style={{ width: "100%", maxWidth: 1000, display: "flex", flexDirection: "column", gap: 32 }}
-            >
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 24 }}>
-                <SocialCard 
-                  icon={<Github size={24} color="#f8fafc" />}
-                  title="GitHub"
-                  handle="adr1en360/AlphaSurface"
-                  href="https://github.com/adr1en360/AlphaSurface"
-                  color="rgba(255,255,255,0.05)"
-                  hoverColor="rgba(255,255,255,0.1)"
-                  delay={1.0}
-                />
-                <SocialCard 
-                  icon={<Twitter size={24} color="#38bdf8" />}
-                  title="X (Twitter)"
-                  handle="@artiflux360"
-                  href="https://x.com/artiflux360"
-                  color="rgba(56,189,248,0.05)"
-                  hoverColor="rgba(56,189,248,0.15)"
-                  delay={1.1}
-                />
-                <SocialCard 
-                  icon={<Linkedin size={24} color="#3b82f6" />}
-                  title="LinkedIn"
-                  handle="adrienoke"
-                  href="https://www.linkedin.com/in/adrienoke/"
-                  color="rgba(59,130,246,0.05)"
-                  hoverColor="rgba(59,130,246,0.15)"
-                  delay={1.2}
-                />
-              </div>
-
-              {/* Scroll prompt */}
-              <motion.div 
-                animate={{ y: [0, 8, 0], opacity: [0.5, 1, 0.5] }}
-                transition={{ duration: 2, ease: "easeInOut", repeat: Infinity }}
-                onClick={() => setStep(1)}
-                style={{ 
-                  display: "flex", flexDirection: "column", alignItems: "center", gap: 8, 
-                  color: "#64748b", fontSize: 13, fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase",
-                  cursor: "pointer", paddingBottom: 16
-                }}
-              >
-                <span>Scroll or click to begin</span>
-                <ChevronDown size={20} />
-              </motion.div>
-            </motion.div>
-          </motion.div>
-        )}
-
-        {step === 1 && (
-          <motion.div
-            key="step1"
-            initial={{ opacity: 0, y: 60, scale: 0.95, filter: "blur(0px)" }}
-            animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
-            exit={{ opacity: 0, y: -40, filter: "blur(10px)", scale: 0.95 }}
-            transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-            style={{ position: "relative", zIndex: 1, width: "100%", maxWidth: 800, padding: "0 24px" }}
-          >
-            <div style={{ textAlign: "center", marginBottom: 64 }}>
-              <motion.div 
-                initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.6 }}
-                style={{ fontSize: 40, fontWeight: 700, letterSpacing: "-0.03em", marginBottom: 16 }}
-              >
-                How are you working today?
-              </motion.div>
-              <motion.div 
-                initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3, duration: 0.6 }}
-                style={{ fontSize: 18, color: "#94a3b8", fontWeight: 400 }}
-              >
-                AlphaSurface adapts its behaviour based on your current focus.
-              </motion.div>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
-              <ModeCard 
-                icon={<Brain size={36} color="#d946ef" />}
-                title="Think Mode"
-                description="I'm exploring an idea alone. Let the AI inject provocations and questions."
-                delay={0.2}
-                onClick={() => handleModeSelect("think")}
-                glowColor="rgba(217,70,239,0.3)"
-              />
-              <ModeCard 
-                icon={<Presentation size={36} color="#06b6d4" />}
-                title="Present Mode"
-                description="I'm presenting to others. Keep the AI supportive, silent, and contextual."
-                delay={0.3}
-                onClick={() => handleModeSelect("explain")}
-                glowColor="rgba(6,182,212,0.3)"
-              />
-            </div>
-            
-            <div style={{ textAlign: "center", marginTop: 40 }}>
-              <button
-                onClick={() => setStep(0)}
-                style={{
-                  background: "transparent", border: "none", color: "#475569", fontSize: 14,
-                  cursor: "pointer", padding: "8px 16px", transition: "color 0.2s"
-                }}
-                onMouseEnter={(e) => e.target.style.color = "#94a3b8"}
-                onMouseLeave={(e) => e.target.style.color = "#475569"}
-              >
-                ← Back to Welcome
-              </button>
-            </div>
-          </motion.div>
-        )}
-
-        {step === 2 && (
-          <motion.div
-            key="step2"
-            initial={{ opacity: 0, y: 40, filter: "blur(10px)" }}
-            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-            exit={{ opacity: 0, y: -40 }}
-            transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-            style={{ position: "relative", zIndex: 1, width: "100%", maxWidth: 640, padding: "0 24px", display: "flex", flexDirection: "column", gap: 24 }}
-          >
-            <div style={{ textAlign: "center", marginBottom: 24 }}>
-              <div style={{ fontSize: 32, fontWeight: 700, letterSpacing: "-0.03em", marginBottom: 12 }}>
-                {mode === "explain" ? "Session setup" : "What are you working on?"}
-              </div>
-              <div style={{ fontSize: 16, color: "#94a3b8" }}>
-                Optional. Helps contextualise the canvas immediately. 
-              </div>
-            </div>
-
-            {/* Model picker (addendum) */}
-            <div style={{ marginTop: 24 }}>
-              <div style={{
-                fontSize: 13, fontWeight: 600, color: "#cbd5e1", marginBottom: 12,
-                marginLeft: 8, textTransform: "uppercase", letterSpacing: "0.05em"
-              }}>
-                Gemini Model
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {MODEL_OPTIONS.map((m) => (
-                  <button
-                    key={m.id}
-                    onClick={() => setSelectedModel(m.id)}
-                    style={{
-                      background: selectedModel === m.id ? "rgba(6, 182, 212, 0.1)" : "rgba(15, 23, 42, 0.4)",
-                      border: selectedModel === m.id ? `2px solid ${m.badgeColor}` : "1px solid rgba(148,163,184,0.2)",
-                      color: "#f8fafc",
-                      borderRadius: 16,
-                      padding: "16px 20px",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 16,
-                      cursor: "pointer",
-                      width: "100%",
-                      transition: "border 0.2s, background 0.2s"
-                    }}
-                  >
-                    {/* Radio dot */}
-                    <div style={{
-                      width: 16, height: 16, borderRadius: "50%", flexShrink: 0,
-                      border: selectedModel === m.id ? `6px solid ${m.badgeColor}` : "2px solid #64748b",
-                      background: selectedModel === m.id ? m.badgeColor : "transparent",
-                      marginRight: 12,
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                    }}>
-                      {selectedModel === m.id && (
-                        <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} />
-                      )}
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
-                        <span style={{ fontWeight: 600, fontSize: 16 }}>{m.label}</span>
-                        <span style={{
-                          fontSize: 11, fontWeight: 700, color: m.badgeColor, background: "rgba(6,182,212,0.08)",
-                          borderRadius: 8, padding: "2px 8px", marginLeft: 4, letterSpacing: "0.04em"
-                        }}>{m.badge}</span>
-                      </div>
-                      <div style={{ fontSize: 12, color: "#64748b" }}>{m.desc}</div>
-                    </div>
+                {/* CTA */}
+                <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ ...RISE, delay: 0.4 }}>
+                  <button className="btn-primary" onClick={() => setStep(1)}>
+                    Begin session <ArrowRight size={17} />
                   </button>
-                ))}
+                </motion.div>
+
+                {/* Social links */}
+                <motion.div
+                  initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.7 }}
+                  style={{ display: "flex", gap: 28, marginTop: 56, alignItems: "center" }}
+                >
+                  {[
+                    { icon: <Github size={14} />, label: "GitHub", href: "https://github.com/adr1en360/AlphaSurface" },
+                    { icon: <Twitter size={14} />, label: "X", href: "https://x.com/artiflux360" },
+                    { icon: <Linkedin size={14} />, label: "LinkedIn", href: "https://www.linkedin.com/in/adrienoke/" },
+                  ].map(({ icon, label, href }) => (
+                    <a key={label} href={href} target="_blank" rel="noopener noreferrer"
+                      style={{ display: "flex", alignItems: "center", gap: 7, color: "var(--muted)", textDecoration: "none", fontSize: 13, fontFamily: "'JetBrains Mono'", transition: "color 0.15s", letterSpacing: "0.03em" }}
+                      onMouseEnter={(e) => e.currentTarget.style.color = "var(--text)"}
+                      onMouseLeave={(e) => e.currentTarget.style.color = "var(--muted)"}
+                    >
+                      {icon}{label}
+                    </a>
+                  ))}
+                  <span style={{ color: "var(--muted2)", fontSize: 11, fontFamily: "'JetBrains Mono'", letterSpacing: "0.06em", marginLeft: 8 }}>
+                    Gemini Live · Google ADK
+                  </span>
+                </motion.div>
               </div>
-            </div>
+            </motion.div>
+          )}
 
-            <div style={{ position: "relative" }}>
-              <input
-                autoFocus
-                value={goal}
-                onChange={(e) => setGoal(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleFinish();
-                }}
-                placeholder={mode === "explain" ? "e.g. Presenting quarterly metrics..." : "e.g. Planning a new app architecture..."}
-                style={{
-                  width: "100%",
-                  background: "rgba(15, 23, 42, 0.6)",
-                  border: "1px solid rgba(148, 163, 184, 0.2)",
-                  borderRadius: 24,
-                  padding: "24px 32px",
-                  fontSize: 20,
-                  color: "#f8fafc",
-                  outline: "none",
-                  boxShadow: "inset 0 2px 4px rgba(0,0,0,0.2), 0 20px 40px rgba(0,0,0,0.4)",
-                  transition: "border-color 0.3s, box-shadow 0.3s, background 0.3s",
-                  backdropFilter: "blur(20px)"
-                }}
-                onFocus={(e) => {
-                  e.target.style.borderColor = "rgba(6, 182, 212, 0.5)";
-                  e.target.style.background = "rgba(15, 23, 42, 0.8)";
-                  e.target.style.boxShadow = "inset 0 2px 4px rgba(0,0,0,0.2), 0 0 0 4px rgba(6, 182, 212, 0.15), 0 20px 40px rgba(0,0,0,0.4)";
-                }}
-                onBlur={(e) => {
-                  e.target.style.borderColor = "rgba(148, 163, 184, 0.2)";
-                  e.target.style.background = "rgba(15, 23, 42, 0.6)";
-                  e.target.style.boxShadow = "inset 0 2px 4px rgba(0,0,0,0.2), 0 20px 40px rgba(0,0,0,0.4)";
-                }}
-              />
-              <motion.button
-                initial={{ opacity: 0, scale: 0.8 }}
-                animate={{ opacity: goal.length > 0 ? 1 : 0, scale: goal.length > 0 ? 1 : 0.8 }}
-                onClick={handleFinish}
-                style={{
-                  position: "absolute",
-                  right: 16, top: 16, bottom: 16,
-                  background: "linear-gradient(135deg, #06b6d4, #3b82f6)",
-                  border: "none", borderRadius: 16,
-                  width: 56,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  cursor: goal.length > 0 ? "pointer" : "default",
-                  pointerEvents: goal.length > 0 ? "auto" : "none",
-                  boxShadow: "0 8px 20px rgba(6,182,212,0.3)",
-                }}
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-              >
-                <ArrowRight color="white" size={24} />
-              </motion.button>
-            </div>
+          {/* ══ STEP 1: MODE ══ */}
+          {step === 1 && (
+            <motion.div key="s1"
+              initial={{ opacity: 0, y: 40 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
+              transition={RISE}
+              style={{ position: "absolute", inset: 0, zIndex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "8vh 8vw" }}
+            >
+              <div style={{ width: "100%", maxWidth: 780 }}>
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }}
+                  style={{ fontFamily: "'JetBrains Mono'", fontSize: 10, color: "var(--cyan)", letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 20, opacity: 0.8 }}
+                >
+                  01 / session type
+                </motion.div>
+                <motion.h2 initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ ...RISE, delay: 0.15 }}
+                  style={{ fontSize: "clamp(30px, 5vw, 52px)", fontWeight: 800, letterSpacing: "-0.03em", marginBottom: 10 }}
+                >
+                  How are you working today?
+                </motion.h2>
+                <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.25 }}
+                  style={{ color: "var(--muted)", fontSize: 16, marginBottom: 44 }}
+                >
+                  AlphaSurface reshapes itself entirely around your context.
+                </motion.p>
 
-            {mode === "explain" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 24, marginTop: 8 }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: "#cbd5e1", marginBottom: 12, marginLeft: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                    Who are you presenting to?
-                  </div>
-                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
-                    {["Students", "Colleagues", "General Audience"].map((a) => (
-                      <button
-                        key={a}
-                        onClick={() => setAudience(a)}
-                        style={{
-                          background: audience === a ? "rgba(6, 182, 212, 0.2)" : "rgba(15, 23, 42, 0.6)",
-                          border: `1px solid ${audience === a ? "rgba(6, 182, 212, 0.5)" : "rgba(255, 255, 255, 0.05)"}`,
-                          color: audience === a ? "#fff" : "#94a3b8",
-                          padding: "12px 24px", borderRadius: 24, boxSizing: "border-box", fontSize: 14, cursor: "pointer", transition: "all 0.2s"
-                        }}
-                      >
-                        {a}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: "#cbd5e1", marginBottom: 12, marginLeft: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                    Pre-load Reference Material
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "center" }}>
-                    <button
-                      onClick={handleUploadClick}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginBottom: 36 }}>
+                  {[
+                    {
+                      cls: "mode-card-think", m: "think",
+                      color: "var(--violet)", colorRgb: "124,92,191",
+                      icon: <Brain size={26} color="#7c5cbf" />,
+                      label: "Think Mode",
+                      sub: "Solo exploration",
+                      desc: "You develop ideas. The AI watches, listens, and injects provocations — open questions that reframe your thinking. It never answers for you."
+                    },
+                    {
+                      cls: "mode-card-present", m: "explain",
+                      color: "var(--cyan)", colorRgb: "0,212,245",
+                      icon: <Presentation size={26} color="#00d4f5" />,
+                      label: "Present Mode",
+                      sub: "Live presentation",
+                      desc: "You present, the AI scribes in real time. Dates, concepts, visuals land on canvas as you speak. Silent unless asked. Always one step behind by design."
+                    },
+                  ].map(({ cls, m, color, colorRgb, icon, label, sub, desc }, i) => (
+                    <motion.button key={m}
+                      className={`glass ${cls}`}
+                      onClick={() => handleModeSelect(m)}
+                      initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+                      transition={{ ...RISE, delay: 0.3 + i * 0.1 }}
+                      onMouseEnter={() => setHovered(m)}
+                      onMouseLeave={() => setHovered(null)}
                       style={{
-                        background: uploadedFileName ? "rgba(52, 211, 153, 0.15)" : "rgba(15, 23, 42, 0.6)",
-                        border: uploadedFileName ? "1px solid rgba(52, 211, 153, 0.4)" : "1px dashed rgba(255, 255, 255, 0.2)",
-                        color: uploadedFileName ? "#34d399" : "#94a3b8",
-                        padding: "16px 32px", borderRadius: 24, width: "100%", fontSize: 15, cursor: "pointer", transition: "all 0.2s"
-                      }}
-                      onMouseEnter={(e) => {
-                        if (!uploadedFileName) e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.4)";
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!uploadedFileName) e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.2)";
+                        padding: "36px 32px", textAlign: "left", cursor: "pointer",
+                        position: "relative", overflow: "hidden",
+                        transition: "all 0.3s",
                       }}
                     >
-                      {uploadedFileName ? `📄 Uploaded: ${uploadedFileName}` : "Click to upload PDF / Docx notes"}
-                    </button>
-                  </div>
+                      {/* Hover shimmer */}
+                      <motion.div
+                        animate={{ opacity: hovered === m ? 1 : 0 }}
+                        transition={{ duration: 0.3 }}
+                        style={{
+                          position: "absolute", top: 0, left: 0, right: 0, height: 1,
+                          background: `linear-gradient(90deg, transparent, rgba(${colorRgb},0.6), transparent)`,
+                        }}
+                      />
+                      <div style={{ marginBottom: 20 }}>{icon}</div>
+                      <div style={{ fontFamily: "'JetBrains Mono'", fontSize: 10, color: color, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8, opacity: 0.8 }}>{sub}</div>
+                      <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em", marginBottom: 14, color: "#fff" }}>{label}</div>
+                      <div style={{ fontSize: 14, color: "#fff", lineHeight: 1.7 }}>{desc}</div>
+                      <div style={{ position: "absolute", bottom: 24, right: 24, opacity: 0.2 }}>
+                        <ArrowRight size={16} />
+                      </div>
+                    </motion.button>
+                  ))}
                 </div>
+
+                <button className="back-link" onClick={() => setStep(0)}>← back</button>
               </div>
-            )}
+            </motion.div>
+          )}
 
-            <div style={{ textAlign: "center", marginTop: 16, display: "flex", justifyContent: "center", gap: 32 }}>
-              <button
-                onClick={() => setStep(1)}
-                style={{
-                  background: "transparent", border: "none", color: "#475569", fontSize: 14,
-                  cursor: "pointer", padding: "8px 16px", transition: "color 0.2s"
-                }}
-                onMouseEnter={(e) => e.target.style.color = "#94a3b8"}
-                onMouseLeave={(e) => e.target.style.color = "#475569"}
-              >
-                ← Back
-              </button>
-              <button
-                onClick={handleFinish}
-                style={{
-                  background: "transparent", border: "none", color: "#64748b", fontSize: 14,
-                  cursor: "pointer", padding: "8px 16px", transition: "color 0.2s",
-                  fontWeight: 500
-                }}
-                onMouseEnter={(e) => e.target.style.color = "#f8fafc"}
-                onMouseLeave={(e) => e.target.style.color = "#64748b"}
-              >
-                {mode === "explain" ? "Start Presentation" : "Skip & Start Canvas"}
-              </button>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-      <style>{`
-        input::placeholder { color: #475569; }
-        ::-webkit-scrollbar { width: 0; }
-      `}</style>
-    </div>
-  );
-}
+          {/* ══ STEP 2: SETUP ══ */}
+          {step === 2 && (
+            <motion.div key="s2"
+              initial={{ opacity: 0, y: 40 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
+              transition={RISE}
+              style={{ position: "absolute", inset: 0, zIndex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "8vh 8vw" }}
+            >
+              <div style={{ width: "100%", maxWidth: 620 }}>
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }}
+                  style={{ fontFamily: "'JetBrains Mono'", fontSize: 10, color: "var(--cyan)", letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 20, opacity: 0.8 }}
+                >
+                  02 / {mode === "explain" ? "presentation setup" : "session focus"}
+                </motion.div>
+                <motion.h2 initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ ...RISE, delay: 0.15 }}
+                  style={{ fontSize: "clamp(26px, 4vw, 42px)", fontWeight: 800, letterSpacing: "-0.03em", marginBottom: 10 }}
+                >
+                  {mode === "explain" ? "Set up your presentation" : "What are you exploring?"}
+                </motion.h2>
+                <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.2 }}
+                  style={{ color: "var(--muted)", fontSize: 15, marginBottom: 36 }}
+                >
+                  Optional — helps AlphaSurface orient immediately.
+                </motion.p>
 
-function ModeCard({ title, description, icon, delay, onClick, glowColor }) {
-  return (
-    <motion.button
-      onClick={onClick}
-      initial={{ opacity: 0, y: 30 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay, duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
-      whileHover={{ y: -8, scale: 1.02 }}
-      whileTap={{ scale: 0.98 }}
-      style={{
-        background: "rgba(15, 23, 42, 0.4)",
-        border: "1px solid rgba(255, 255, 255, 0.05)",
-        borderRadius: 32,
-        padding: "40px 32px",
-        textAlign: "left",
-        cursor: "pointer",
-        backdropFilter: "blur(40px)",
-        boxShadow: "0 20px 40px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05)",
-        display: "flex", flexDirection: "column", gap: 24,
-        position: "relative",
-        overflow: "hidden",
-        transition: "border-color 0.4s ease, background 0.4s ease, box-shadow 0.4s ease"
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.borderColor = glowColor.replace("0.3", "0.5");
-        e.currentTarget.style.background = "rgba(15, 23, 42, 0.7)";
-        e.currentTarget.style.boxShadow = `0 20px 40px rgba(0,0,0,0.4), 0 0 60px ${glowColor}, inset 0 1px 0 rgba(255,255,255,0.1)`;
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.05)";
-        e.currentTarget.style.background = "rgba(15, 23, 42, 0.4)";
-        e.currentTarget.style.boxShadow = "0 20px 40px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05)";
-      }}
-    >
-      <div style={{ 
-        width: 72, height: 72, borderRadius: 20, 
-        background: "rgba(15, 23, 42, 0.8)", border: "1px solid rgba(255,255,255,0.05)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.1), 0 8px 16px rgba(0,0,0,0.4)"
-      }}>
-        {icon}
-      </div>
-      <div>
-        <div style={{ fontSize: 26, fontWeight: 700, color: "#f8fafc", marginBottom: 12, letterSpacing: "-0.02em" }}>
-          {title}
-        </div>
-        <div style={{ fontSize: 16, color: "#94a3b8", lineHeight: 1.6 }}>
-          {description}
-        </div>
-      </div>
-    </motion.button>
-  );
-}
+                {/* Goal input */}
+                <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ ...RISE, delay: 0.25 }}
+                  style={{ position: "relative", marginBottom: 28 }}
+                >
+                  <input ref={inputRef} className="alpha-input"
+                    value={goal}
+                    onChange={(e) => setGoal(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleFinish(); }}
+                    placeholder={mode === "explain" ? "e.g. Quarterly business review for the board..." : "e.g. Mapping a new product architecture..."}
+                  />
+                  <motion.button
+                    animate={{ opacity: goal.length > 0 ? 1 : 0.3 }}
+                    onClick={goal.length > 0 ? handleFinish : undefined}
+                    style={{
+                      position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+                      width: 40, height: 40, borderRadius: 10,
+                      background: goal.length > 0 ? "linear-gradient(135deg, rgba(0,212,245,0.2), rgba(124,92,191,0.2))" : "transparent",
+                      border: goal.length > 0 ? "1px solid rgba(0,212,245,0.3)" : "1px solid rgba(255,255,255,0.06)",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      cursor: goal.length > 0 ? "pointer" : "default",
+                      transition: "all 0.2s"
+                    }}
+                  >
+                    <ArrowRight size={16} color={goal.length > 0 ? "var(--cyan)" : "var(--muted)"} />
+                  </motion.button>
+                </motion.div>
 
-function SocialCard({ icon, title, handle, href, color, hoverColor, delay }) {
-  return (
-    <motion.a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      initial={{ opacity: 0, y: 20, scale: 0.95 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ delay, duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-      whileHover={{ y: -4, scale: 1.03 }}
-      whileTap={{ scale: 0.97 }}
-      style={{
-        display: "flex", alignItems: "center", gap: 16,
-        background: color,
-        border: "1px solid rgba(255,255,255,0.08)",
-        borderRadius: 20,
-        padding: "20px 24px",
-        textDecoration: "none",
-        color: "#e2e8f0",
-        backdropFilter: "blur(20px)",
-        boxShadow: "0 10px 30px rgba(0,0,0,0.2)",
-        transition: "background 0.3s ease, border-color 0.3s ease"
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.background = hoverColor;
-        e.currentTarget.style.borderColor = "rgba(255,255,255,0.2)";
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.background = color;
-        e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)";
-      }}
-    >
-      <div style={{ 
-        width: 48, height: 48, borderRadius: 12, 
-        background: "rgba(0,0,0,0.2)",
-        display: "flex", alignItems: "center", justifyContent: "center"
-      }}>
-        {icon}
+                {/* Explain mode extras */}
+                {mode === "explain" && (
+                  <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ ...RISE, delay: 0.35 }}
+                    style={{ display: "flex", flexDirection: "column", gap: 28, marginBottom: 28 }}
+                  >
+                    {/* Audience */}
+                    <div>
+                      <div style={{ fontFamily: "'JetBrains Mono'", fontSize: 10, color: "var(--muted)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 14 }}>
+                        Audience
+                      </div>
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                        {["Students", "Colleagues", "General Audience"].map((a) => (
+                          <button key={a} className={`tag ${audience === a ? "active" : ""}`}
+                            onClick={() => setAudience(a)}>{a}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* File upload */}
+                    <div>
+                      <div style={{ fontFamily: "'JetBrains Mono'", fontSize: 10, color: "var(--muted)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 14 }}>
+                        Reference material
+                      </div>
+                      {!uploadedFileName ? (
+                        <button className="upload-zone" onClick={handleUpload} disabled={uploading}>
+                          <div style={{ width: 36, height: 36, borderRadius: 8, background: "rgba(255,255,255,0.05)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                            <span style={{ fontSize: 16 }}>{uploading ? "⏳" : "📎"}</span>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 14, fontWeight: 500, color: "var(--text)", marginBottom: 3 }}>
+                              {uploading ? "Uploading..." : "Upload PDF / Docx notes"}
+                            </div>
+                            <div style={{ fontSize: 12, color: "var(--muted)" }}>
+                              Agent uses this for grounded, accurate responses
+                            </div>
+                          </div>
+                        </button>
+                      ) : (
+                        <div className="upload-success">
+                          <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0 }}>
+                            <div style={{ width: 36, height: 36, borderRadius: 8, background: "rgba(74,220,128,0.1)", border: "1px solid rgba(74,220,128,0.3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                              <span style={{ fontSize: 16 }}>✓</span>
+                            </div>
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: 14, fontWeight: 600, color: "#4adc80", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                {uploadedFileName}
+                              </div>
+                              <div style={{ fontFamily: "'JetBrains Mono'", fontSize: 11, color: "var(--muted)", marginTop: 3 }}>
+                                Loaded · Agent will reference this
+                              </div>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => setUploadedFileName("")}
+                            style={{
+                              background: "rgba(232,84,122,0.08)", border: "1px solid rgba(232,84,122,0.25)",
+                              color: "var(--rose)", borderRadius: 8, padding: "7px 16px",
+                              fontFamily: "'JetBrains Mono'", fontSize: 11, letterSpacing: "0.04em",
+                              cursor: "pointer", flexShrink: 0, textTransform: "uppercase",
+                              transition: "background 0.15s", fontWeight: 500
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.background = "rgba(232,84,122,0.16)"}
+                            onMouseLeave={(e) => e.currentTarget.style.background = "rgba(232,84,122,0.08)"}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+
+                {/* Footer nav */}
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }}
+                  style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}
+                >
+                  <button className="back-link" onClick={() => setStep(1)}>← back</button>
+                  <button className="back-link" onClick={handleFinish} style={{ color: "var(--muted)" }}>
+                    {mode === "explain" ? "start presentation →" : "skip, start canvas →"}
+                  </button>
+                </motion.div>
+              </div>
+            </motion.div>
+          )}
+
+        </AnimatePresence>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em" }}>{title}</span>
-        <span style={{ fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>{handle}</span>
-      </div>
-    </motion.a>
+    </>
   );
 }
 
