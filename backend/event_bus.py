@@ -13,7 +13,7 @@ Events published:
   user_silent        → audio went quiet (crossed IDLE_THRESHOLD)
   canvas_changed     → new shapes detected
   canvas_idle        → canvas has been still for IDLE_THRESHOLD seconds
-  provocation_ready  → both idle, cooldown cleared — fire a Sarkar challenge
+  provocation_ready  → both idle, cooldown cleared — fire a challenge
 """
 
 import asyncio

@@ -1,206 +1,394 @@
 # AlphaSurface
 
-AI that thinks alongside you, not for you.
+**AI that thinks alongside you — not for you.**
 
-AlphaSurface is a real-time voice and vision canvas where an AI co-thinker watches what you draw, listens to what you say, and places provocations, connections, and support material directly on a shared infinite whiteboard. It is built with [tldraw](https://tldraw.dev), Gemini Live capabilities, and the [Agent Development Kit (ADK)](https://google.github.io/adk-docs/).
+AlphaSurface is a real-time voice and vision AI co-thinker built on an infinite canvas. There is no chat box, no prompt field, no "ask AI" button. The AI watches what you draw, listens to what you say, and responds spatially — placing shapes, notes, provocations, and research directly onto a shared whiteboard.
 
-![React](https://img.shields.io/badge/React-19-blue)
-![Gemini](https://img.shields.io/badge/Gemini-2.5_Flash-orange)
-![License](https://img.shields.io/badge/License-MIT-green)
+Built for the [Gemini Live Agent Challenge](https://geminiliveagentchallenge.devpost.com/) (Live Agents category).
 
----
-
-## Why AlphaSurface
-
-- Think with voice and visuals in one flow.
-- Get AI support on-canvas instead of in a separate chat window.
-- Switch between solo thinking and teaching workflows.
-- Use a Live Agent architecture with multimodal input and output.
+[![Python](https://img.shields.io/badge/Python-3.12+-blue)](https://python.org)
+[![React](https://img.shields.io/badge/React-19-blue)](https://react.dev)
+[![Gemini](https://img.shields.io/badge/Gemini-2.5_Flash_Live-orange)](https://ai.google.dev)
+[![ADK](https://img.shields.io/badge/Google_ADK-1.10+-green)](https://google.github.io/adk-docs)
+[![tldraw](https://img.shields.io/badge/tldraw-v4-purple)](https://tldraw.dev)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 ---
 
-## Features
+## What It Does
 
-- Live voice conversation with interruption handling (barge-in).
-- Continuous canvas vision from periodic screenshot capture.
-- Two session modes:
-  - Think Mode: challenge assumptions with targeted provocations.
-  - Explain Mode: support teaching with references and media.
-- Canvas-native actions: text, notes, arrows, geo shapes, embeds, bookmarks, and images.
-- Optional web-assisted research and specialist sub-agents.
-- Document upload support for contextual assistance.
+AlphaSurface has two session modes:
 
----
+**Think Mode** — for students and solo thinkers. Start with a blank canvas, talk through your ideas, and draw freely. The AI injects "Sarkar provocations" — open questions that challenge your assumptions — directly onto the canvas as violet sticky notes. When you go quiet, it scans what you've drawn and asks the question you haven't thought to ask yet.
 
-## Installation
+**Present Mode** — for teachers and live presenters. Upload reference documents before your session. As you present, the AI scribes silently: dates, concepts, and named entities land on the canvas in real time. Ask it a question mid-session and it answers grounded in your uploaded documents.
 
-### Prerequisites
-
-- Python 3.12+
-- Node.js 18+
-- [uv](https://docs.astral.sh/uv/) (recommended)
-- A [Gemini API key](https://aistudio.google.com/apikey)
-
-### Setup
-
-```bash
-git clone https://github.com/<your-username>/AlphaSurface.git
-cd AlphaSurface
-
-cd backend
-uv sync
-cd ..
-
-cd frontend
-npm install
-cd ..
-```
-
----
-
-## Quickstart (Local)
-
-### 1) Configure backend env
-
-Create `backend/.env`:
-
-```bash
-GEMINI_API_KEY=your-key-here
-ALPHASURFACE_MODE=think
-ALPHASURFACE_WEB_SEARCH=false
-```
-
-Optional for YouTube features:
-
-```bash
-YOUTUBE_API_KEY=your-youtube-data-api-key
-```
-
-### 2) Run backend
-
-```bash
-cd backend
-uv run uvicorn main:app --reload --port 8000
-```
-
-### 3) Run frontend
-
-In a second terminal:
-
-```bash
-cd frontend
-npm run dev
-```
-
-### 4) Launch
-
-Open [http://localhost:5173](http://localhost:5173), choose mode/settings, and click Launch.
-
----
-
-## Usage
-
-### Think Mode
-
-- Draw an architecture or idea map and ask for weak points.
-- Ask for missing assumptions, hidden risks, or contradictions.
-- Speak while drawing so the agent combines audio and canvas context.
-
-### Explain Mode
-
-- Set audience and goal in onboarding.
-- Upload a source document from the menu.
-- Ask the agent to place references or videos directly on the canvas.
-
-### Canvas menu actions
-
-- Save canvas
-- Load canvas
-- Export PDF
-- Upload document
-
----
-
-## Configuration
-
-| Environment variable | Default | Description |
-|---|---|---|
-| `GEMINI_API_KEY` | - | Required for Gemini access. |
-| `ALPHASURFACE_MODE` | `think` | `think` or `explain`. |
-| `ALPHASURFACE_WEB_SEARCH` | `false` | Enables web-assisted behavior. |
-| `YOUTUBE_API_KEY` | - | Required for YouTubeAgent lookups/embeds. |
-| `MEMORY_BACKEND` | `sqlite` | `sqlite` or `firestore`. |
-| `MEMORY_DB_PATH` | backend local path | SQLite file path override. |
-| `GOOGLE_GENAI_USE_VERTEXAI` | `false` | Use Vertex AI path when `true`. |
-| `GOOGLE_CLOUD_PROJECT` | - | Required if using Vertex AI. |
-
-Many of these can also be set from onboarding for session behavior.
+In both modes, the AI can dispatch specialist sub-agents in parallel: research cards, YouTube embeds, generated images, and deep analysis — all without interrupting your voice flow.
 
 ---
 
 ## Architecture
 
-```text
-Browser (React + tldraw)
-  <-> WebSocket (audio chunks + canvas snapshots + actions)
+```
+Browser (React + tldraw v4)
+  │
+  ├── WebSocket (audio PCM chunks + canvas snapshots + actions)
+  │
 FastAPI (main.py)
-  -> AlphaSurfaceAgent (ADK LiveRequestQueue + Runner)
-  -> tools dispatcher + sub-agents
-  -> broadcast actions/events back to browser
+  │
+  ├── AlphaSurfaceAgent (ADK LiveRequestQueue + Runner)
+  │     ├── Gemini 2.5 Flash Native Audio (Live API)
+  │     ├── LIVE_AGENT_TOOLS (~28 canvas tools)
+  │     └── EventBus (idle detection → proactive provocations)
+  │
+  ├── Dispatcher (task queue → sub-agents)
+  │     ├── ResearchAgent   (google_search → canvas cards)
+  │     ├── ImageGenAgent   (Gemini Imagen / Pollinations fallback)
+  │     ├── YouTubeAgent    (YouTube Data API v3 → iframe embeds)
+  │     ├── DocumentAgent   (PDF/Docx extraction → spatial map)
+  │     ├── SuperThinkAgent (Gemini 2.5 Pro + thinking budget)
+  │     └── ContinuationAgent (deferred multi-step tasks)
+  │
+  ├── Memory (SQLite local / Firestore cloud)
+  └── Static file server (/static/images/)
 ```
 
-A visual architecture diagram will be added after local testing.
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | React 19, Vite, tldraw v4, Framer Motion |
+| Backend | Python 3.12, FastAPI, WebSockets, uv |
+| AI — Live voice | Gemini 2.5 Flash Native Audio (`gemini-2.5-flash-native-audio-preview-12-2025`) |
+| AI — Sub-agents | Gemini 2.5 Flash via Google ADK |
+| AI — Deep analysis | Gemini 2.5 Pro with extended thinking budget |
+| AI — Image generation | Gemini Imagen / Pollinations fallback |
+| Agent framework | Google Agent Development Kit (ADK) |
+| Memory | SQLite (local), Firestore (Cloud Run) |
+| Cloud | Google Cloud Run |
 
 ---
 
-## Deployment Status
+## Prerequisites
 
-This project is being validated locally first, then deployed to Cloud Run.
-
-Planned final submission artifacts:
-
-- Cloud Run deployment proof.
-- Architecture diagram.
-- Public demo video.
+- Python 3.12+
+- Node.js 18+
+- [uv](https://docs.astral.sh/uv/) package manager
+- A [Gemini API key](https://aistudio.google.com/apikey) (free tier works for the Live API)
+- Optional: YouTube Data API v3 key (for YouTube sub-agent)
 
 ---
 
-## Development
+## Local Setup
+
+### 1. Clone the repository
 
 ```bash
-# Backend
-cd backend
-uv run uvicorn main:app --reload --port 8000
-
-# Frontend
-cd frontend
-npm run dev
-
-# Frontend lint
-npm run lint
-
-# Backend tests
-cd ../backend
-uv run pytest
+git clone https://github.com/adr1en360/AlphaSurface.git
+cd AlphaSurface
 ```
 
-Health check:
+### 2. Install backend dependencies
 
+```bash
+cd backend
+uv sync
+```
+
+### 3. Configure environment variables
+
+Create `backend/.env`:
+
+```env
+# Required
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# Optional — enables YouTube sub-agent
+YOUTUBE_API_KEY=your_youtube_data_api_v3_key
+
+# Optional — image generation provider (gemini | pollinations | auto)
+ALPHASURFACE_IMAGE_PROVIDER=auto
+
+# Optional — Pollinations fallback for image gen rate limits
+POLLINATIONS_API_KEY=your_pollinations_key
+
+# Optional — override model strings
+ALPHASURFACE_MODEL_LIVE=gemini-2.5-flash-native-audio-preview-12-2025
+ALPHASURFACE_MODEL_FAST=gemini-2.5-flash
+ALPHASURFACE_MODEL_THINKING=gemini-2.5-pro
+
+# Cloud deployment
+MEMORY_BACKEND=sqlite          # sqlite (local) or firestore (cloud)
+GOOGLE_GENAI_USE_VERTEXAI=false
+```
+
+### 4. Install frontend dependencies
+
+```bash
+cd ../frontend
+npm install
+```
+
+---
+
+## Running Locally
+
+Start the backend in one terminal:
+
+```bash
+cd backend
+uv run uvicorn main:app --reload --port 8000
+```
+
+Start the frontend in a second terminal:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Open [http://localhost:5173](http://localhost:5173) in your browser.
+
+**Health check:**
 ```bash
 curl http://localhost:8000/health
 ```
 
 ---
 
+## Usage
+
+### Onboarding
+
+On first launch, you will see the onboarding flow:
+
+1. **Choose a mode** — Think Mode (solo exploration) or Present Mode (live presentation)
+2. **Describe your session focus** — optional, helps the AI orient immediately
+3. **Upload reference material** — PDFs or Docx files (Present Mode only)
+
+Config is saved to `localStorage` so you skip onboarding on subsequent visits. Clear it to reset:
+
+```js
+localStorage.removeItem("alpha_surface_config")
+```
+
+### Think Mode
+
+- Talk freely about your ideas while drawing on the canvas
+- Go quiet for ~8 seconds — a violet provocation note will appear questioning your assumptions
+- Say "research X", "find a video on Y", or "generate an image of Z" to trigger sub-agents
+- Say "super think" or "deep dive" to trigger a full Gemini 2.5 Pro analysis
+- Say "organize this" to align and distribute shapes spatially
+
+### Present Mode
+
+- Pre-load a document via onboarding or the main menu
+- Present normally — the AI scribes dates, concepts, and key points onto the canvas
+- Ask "what does the document say about X?" for grounded answers from your uploaded file
+- Say nothing unless spoken to — the AI stays completely silent by default
+
+### Controls
+
+The status pill in the top-center shows AI state and has two toggles:
+
+| Toggle | Function |
+|---|---|
+| 🎤 MIC ON/OFF | Mute/unmute your microphone (AI stops receiving audio) |
+| 🔊 SPEAKER ON/OFF | Mute/unmute AI voice output (you still send audio) |
+
+### Main Menu
+
+The tldraw hamburger menu (top-left) contains:
+
+- **Save canvas** — exports canvas state as `.tldr` file
+- **Load canvas** — imports a saved `.tldr` file
+- **Export PDF** — renders all pages to a multi-page PDF
+- **Upload document** — adds a document for the agent to reference
+
+---
+
+## Project Structure
+
+```
+AlphaSurface/
+├── backend/
+│   ├── main.py                 # FastAPI server + WebSocket handler
+│   ├── live_session.py         # Gemini Live API session management
+│   ├── agent.py                # ADK LlmAgent factory
+│   ├── agent_tasks.py          # Task queue + scratch pad
+│   ├── dispatcher.py           # Routes tasks to sub-agents
+│   ├── event_bus.py            # Idle detection + provocation cooldowns
+│   ├── memory.py               # SQLite / Firestore dual backend
+│   ├── model_config.py         # Model string constants
+│   ├── prompts/
+│   │   ├── base.txt            # Core agent personality
+│   │   ├── think_mode.txt      # Think Mode addendum
+│   │   ├── present_mode.txt    # Present Mode addendum
+│   │   └── loader.py           # Prompt builder
+│   ├── tools/
+│   │   ├── basic_write.py      # add_note, add_geo, zoom_to_fit, memory...
+│   │   ├── smart_write.py      # place_near, place_in_empty_space
+│   │   ├── organize.py         # align, distribute, stack, rotate...
+│   │   ├── spatial_read.py     # get_viewport_context, get_canvas_map...
+│   │   ├── semantic.py         # label_shape, get_semantic_graph
+│   │   ├── pen_draw.py         # draw_freehand
+│   │   ├── dispatch.py         # dispatch_research, dispatch_youtube...
+│   │   └── state.py            # Shared canvas state
+│   └── sub_agents/
+│       ├── research_agent.py
+│       ├── image_gen_agent.py
+│       ├── youtube_agent.py
+│       ├── document_agent.py
+│       ├── super_think_agent.py
+│       ├── continuation_agent.py
+│       └── persona_agent.py
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx
+│   │   ├── agent/AlphaSurfaceInner.jsx  # WS, mic, canvas capture, status
+│   │   ├── audio/AudioPlayback.js       # PCM audio playback singleton
+│   │   ├── canvas/
+│   │   │   ├── canvasActions.js         # All tldraw shape operations
+│   │   │   ├── canvasSnapshot.js        # Three-tier spatial context builder
+│   │   │   └── shapeConverters.js       # BlurryShape / FocusedShape / Clusters
+│   │   └── components/
+│   │       ├── OnboardingFlow.jsx
+│   │       ├── StatusPill.jsx
+│   │       └── AlphaMainMenu.jsx
+│   └── vite.config.js
+└── README.md
+```
+
+---
+
+## Environment Variables Reference
+
+| Variable | Default | Description |
+|---|---|---|
+| `GEMINI_API_KEY` | — | **Required.** AI Studio API key. |
+| `YOUTUBE_API_KEY` | — | YouTube Data API v3. Required for YouTube sub-agent. |
+| `ALPHASURFACE_MODEL_LIVE` | `gemini-2.5-flash-native-audio-preview-12-2025` | Live voice model. |
+| `ALPHASURFACE_MODEL_FAST` | `gemini-2.5-flash` | Sub-agent model. |
+| `ALPHASURFACE_MODEL_THINKING` | `gemini-2.5-pro` | SuperThink deep analysis model. |
+| `ALPHASURFACE_MODEL_IMAGE` | `gemini-2.5-flash-image` | Image generation model. |
+| `ALPHASURFACE_IMAGE_PROVIDER` | `auto` | `gemini`, `pollinations`, or `auto` (Gemini with Pollinations fallback on 429). |
+| `POLLINATIONS_API_KEY` | — | Pollinations API key for image fallback. |
+| `ALPHASURFACE_BASE_URL` | `http://localhost:8000` | Base URL for serving static images. Override for Cloud Run. |
+| `MEMORY_BACKEND` | `sqlite` | `sqlite` (local) or `firestore` (Cloud Run). |
+| `MEMORY_DB_PATH` | `backend/alphasurface_memory.db` | SQLite file path override. |
+| `GOOGLE_GENAI_USE_VERTEXAI` | `false` | Set `true` to use Vertex AI instead of AI Studio. |
+| `GOOGLE_CLOUD_PROJECT` | — | Required if using Vertex AI. |
+
+---
+
+## Cloud Deployment (Google Cloud Run)
+
+### Prerequisites
+
+- [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) installed and authenticated
+- A GCP project with billing enabled
+- Cloud Run, Artifact Registry, and Firestore APIs enabled
+
+### Deploy
+
+```bash
+# Build and push container
+gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/alphasurface-backend ./backend
+
+# Deploy to Cloud Run
+gcloud run deploy alphasurface-backend \
+  --image gcr.io/YOUR_PROJECT_ID/alphasurface-backend \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars GEMINI_API_KEY=your_key,MEMORY_BACKEND=firestore,GOOGLE_CLOUD_PROJECT=YOUR_PROJECT_ID \
+  --memory 1Gi \
+  --port 8000
+```
+
+### Frontend
+
+Update `frontend/vite.config.js` to proxy to your Cloud Run URL, then deploy the frontend to Firebase Hosting, Cloud Run, or any static host.
+
+---
+
+## Development
+
+### Backend tests
+
+```bash
+cd backend
+uv run pytest
+```
+
+### Frontend lint
+
+```bash
+cd frontend
+npm run lint
+```
+
+### Adding a new tool
+
+1. Implement the function in the relevant `tools/` file
+2. Import it in `tools/__init__.py` and add it to `ALL_TOOLS`
+3. Add a docstring — the agent uses it to decide when to call the tool
+4. Restart the backend
+
+### Adding a new sub-agent
+
+1. Create `sub_agents/your_agent.py` with an `async def run(payload, broadcast_fn)` handler
+2. Register it in `main.py` lifespan with `register_handler("your_agent", handler)`
+3. Add a `dispatch_your_agent(...)` function in `tools/dispatch.py`
+4. Import and expose it in `tools/__init__.py`
+
+---
+
+## Key Design Decisions
+
+**No text channel.** All AI output is spatial — shapes, notes, arrows, embeds. There is no chat panel and no text fallback. This is intentional and is the core differentiator.
+
+**Sarkar provocations.** Based on Advait Sarkar's research on AI as a thinking partner. The AI challenges and supports human thinking rather than replacing it. Provocations are always open questions, never answers or statements.
+
+**Three-tier canvas context.** The frontend sends a structured spatial snapshot every 3 seconds: focused shapes (selected/agent-placed, full detail), blurry shapes (viewport overview), and peripheral clusters (off-screen shapes grouped by proximity). This gives Gemini spatial awareness without flooding its context window.
+
+**Orchestrator + continuation pattern.** The Live Agent handles real-time voice and quick canvas actions. Complex multi-step tasks are deferred to the ContinuationAgent so the live voice session stays responsive.
+
+---
+
+## Known Limitations
+
+- Gemini Live API sessions have a 12-minute hard limit; AlphaSurface auto-reconnects
+- YouTube sub-agent requires a YouTube Data API v3 key with the API enabled in your GCP project
+- Image generation falls back to Pollinations when Gemini Imagen quota is exhausted
+- PersonaAgent is disabled by default to reduce API calls during development
+
+---
+
 ## Contributing
 
-1. Fork the repo and create a branch.
-2. Keep each pull request focused on one feature or fix.
-3. Test both Think and Explain modes before opening a pull request.
-4. Include a clear summary and test notes.
+1. Fork the repository and create a branch
+2. Keep pull requests focused on one feature or fix
+3. Test both Think Mode and Present Mode before opening a PR
+4. Include a summary of what changed and why
 
 ---
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for details.
+
+---
+
+## Acknowledgements
+
+- [Advait Sarkar](https://advait.org) — research on AI as a thinking partner, not a replacement
+- [tldraw](https://tldraw.dev) — infinite canvas foundation
+- [Google ADK](https://google.github.io/adk-docs) — agent orchestration
+- [Gemini Live API](https://ai.google.dev/gemini-api/docs/live) — real-time voice and vision
+
+---
+
+*Built for the Gemini Live Agent Challenge 2026 · [Devpost](https://geminiliveagentchallenge.devpost.com)*
