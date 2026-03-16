@@ -352,7 +352,6 @@ The status pill (top-center) shows AI state and has two toggles:
 | 🎤 MIC ON/OFF | Mute/unmute your microphone (AI stops receiving audio) |
 | 🔊 SPEAKER ON/OFF | Mute/unmute AI voice output (you still send audio) |
 
-### Main Menu
 
 The tldraw hamburger menu (top-left) contains:
 
@@ -360,6 +359,32 @@ The tldraw hamburger menu (top-left) contains:
 - **Load canvas** — imports a saved `.tldr` file
 - **Export PDF** — renders all pages to a multi-page PDF
 - **Upload document** — adds a document for the agent to reference
+
+---
+
+## 🧪 Reproducible Testing (For Judges)
+
+To verify the core functionalities of AlphaSurface, please follow these testing steps once the app is running (either locally or via the provided deployed URL).
+
+**Test 1: Core Voice & Spatial Canvas (Think Mode)**
+1. Launch the app and select **Think Mode** in the onboarding modal.
+2. Unmute your microphone using the top-center Status Pill.
+3. **Action:** Draw a simple flowchart or write a few words on the canvas.
+4. **Speak:** *"I'm drawing out a new system architecture, what do you think I should add?"*
+5. **Expected Result:** The Gemini Live agent will reply verbally, understanding the spatial context of what you just drew, and may place a violet "provocation" note on the canvas.
+
+**Test 2: Sub-Agent Dispatch (YouTube & Research)**
+1. While still in Think Mode, test the tool-calling dispatch system.
+2. **Speak:** *"Can you find a YouTube video explaining the Gemini Live API?"*
+3. **Expected Result:** The Live Orchestrator will pause, dispatch the `YouTube Agent`, and embed a playable YouTube video directly onto your canvas.
+4. **Speak:** *"Generate an image of a futuristic robot working on a whiteboard."*
+5. **Expected Result:** The `Image Gen Agent` will generate and place an image on the canvas (demonstrating the Gemini Imagen/Pollinations fallback logic).
+
+**Test 3: Document Grounding (Present Mode)**
+1. Refresh the page or use the top-left hamburger menu to clear the config and select **Present Mode**.
+2. Upload a sample PDF or DOCX file when prompted.
+3. **Speak:** *"What are the three main takeaways from this document?"*
+4. **Expected Result:** The AI will analyze the document and physically scribe the key points onto the canvas as text blocks.
 
 ---
 
