@@ -561,9 +561,10 @@ MIT — see [LICENSE](LICENSE) for details.
 
 ---
 
+
 ## Acknowledgements
 
-- [Advait Sarkar](https://advait.org) — research on AI as a thinking partner, not a replacement
+- [Advait Sarkar](https://advait.org) — research on AI as a thinking partner, not a replacement ([YouTube talk](https://youtu.be/3lPnN8omdPA?si=u42NSZIWLtgHaBsT))
 - [tldraw](https://tldraw.dev) — infinite canvas foundation
 - [Google ADK](https://google.github.io/adk-docs) — agent orchestration
 - [Gemini Live API](https://ai.google.dev/gemini-api/docs/live) — real-time voice and vision
