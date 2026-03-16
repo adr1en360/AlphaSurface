@@ -1,3 +1,4 @@
+
 # AlphaSurface
 
 **AI that thinks alongside you — not for you.**
@@ -15,42 +16,196 @@ Built for the [Gemini Live Agent Challenge](https://geminiliveagentchallenge.dev
 
 ---
 
-## What It Does
+## Features
 
-AlphaSurface has two session modes:
-
-**Think Mode** — for students and solo thinkers. Start with a blank canvas, talk through your ideas, and draw freely. The AI injects "Sarkar provocations" — open questions that challenge your assumptions — directly onto the canvas as violet sticky notes. When you go quiet, it scans what you've drawn and asks the question you haven't thought to ask yet.
-
-**Present Mode** — for teachers and live presenters. Upload reference documents before your session. As you present, the AI scribes silently: dates, concepts, and named entities land on the canvas in real time. Ask it a question mid-session and it answers grounded in your uploaded documents.
-
-In both modes, the AI can dispatch specialist sub-agents in parallel: research cards, YouTube embeds, generated images, and deep analysis — all without interrupting your voice flow.
+- **No chat box, no prompt field:** Interact by drawing and speaking — the AI responds spatially on the canvas.
+- **Two session modes:**
+  - **Think Mode:** For solo ideation, with AI-generated provocations to challenge your thinking.
+  - **Present Mode:** For live teaching/presenting, with real-time scribing and document-grounded answers.
+- **Specialist sub-agents:** Instantly trigger research, YouTube, image generation, and deep analysis tools by voice.
+- **Infinite canvas:** Built on tldraw v4 for collaborative, spatial thinking.
+- **Real-time voice and vision:** Powered by Gemini 2.5 Flash Native Audio and Google ADK.
 
 ---
 
+## Quickstart (Local)
+
+### Prerequisites
+
+- Python 3.12+
+- Node.js 18+
+- [uv](https://docs.astral.sh/uv/) package manager
+- A [Gemini API key](https://aistudio.google.com/apikey) (free tier works for the Live API)
+- Optional: YouTube Data API v3 key (for YouTube sub-agent)
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/adr1en360/AlphaSurface.git
+cd AlphaSurface
+```
+
+### 2. Install backend dependencies
+
+```bash
+cd backend
+uv sync
+```
+
+### 3. Configure environment variables
+
+Create `backend/.env`:
+
+```env
+# Required
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# Optional — enables YouTube sub-agent
+YOUTUBE_API_KEY=your_youtube_data_api_v3_key
+
+# Optional — image generation provider (gemini | pollinations | auto)
+ALPHASURFACE_IMAGE_PROVIDER=auto
+
+# Optional — Pollinations fallback for image gen rate limits
+POLLINATIONS_API_KEY=your_pollinations_key
+
+# Optional — override model strings
+ALPHASURFACE_MODEL_LIVE=gemini-2.5-flash-native-audio-preview-12-2025
+ALPHASURFACE_MODEL_FAST=gemini-2.5-flash
+ALPHASURFACE_MODEL_THINKING=gemini-2.5-pro
+
+# Cloud deployment
+MEMORY_BACKEND=sqlite          # sqlite (local) or firestore (cloud)
+GOOGLE_GENAI_USE_VERTEXAI=false
+```
+
+### 4. Install frontend dependencies
+
+```bash
+cd ../frontend
+npm install
+```
+
+---
+
+## Running Locally
+
+Start the backend in one terminal:
+
+```bash
+cd backend
+uv run uvicorn main:app --reload --port 8000
+```
+
+Start the frontend in a second terminal:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Open [http://localhost:5173](http://localhost:5173) in your browser.
+
+**Health check:**
+```bash
+curl http://localhost:8000/health
+```
+
+---
+
+## Cloud Deployment (Production)
+
+AlphaSurface is production-ready for Google Cloud Run (backend) and Vercel (frontend).
+
+### Prerequisites
+
+1. Install the [Google Cloud CLI (`gcloud`)](https://cloud.google.com/sdk/docs/install) and run `gcloud auth login`.
+2. Create a Google Cloud Project with billing enabled.
+3. Install the [Vercel CLI](https://vercel.com/docs/cli) (`npm i -g vercel`) and run `vercel login`.
+
+### 1. Deploy the Backend to Google Cloud Run
+
+```bash
+cd backend
+gcloud run deploy alphasurface-backend \
+  --source . \
+  --project YOUR_PROJECT_ID \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars GEMINI_API_KEY="YOUR_GEMINI_API_KEY",MEMORY_BACKEND="firestore",GOOGLE_CLOUD_PROJECT="YOUR_PROJECT_ID" \
+  --memory 1Gi \
+  --port 8000
+```
+*After deploy, copy the Service URL (e.g., `https://alphasurface-backend-xxxxxx-uc.a.run.app`).*
+
+### 2. Configure and Deploy the Frontend to Vercel
+
+1. Edit `frontend/vite.config.js`:
+   - Change the proxy target to your Cloud Run backend URL.
+   - Add `changeOrigin: true` to the proxy config.
+2. Deploy:
+
+```bash
+cd ../frontend
+vercel --prod
+```
+*Vercel will provide a live URL after deploy.*
+
+---
+
+
 ## Architecture
 
-```
-Browser (React + tldraw v4)
-  │
-  ├── WebSocket (audio PCM chunks + canvas snapshots + actions)
-  │
-FastAPI (main.py)
-  │
-  ├── AlphaSurfaceAgent (ADK LiveRequestQueue + Runner)
-  │     ├── Gemini 2.5 Flash Native Audio (Live API)
-  │     ├── LIVE_AGENT_TOOLS (~28 canvas tools)
-  │     └── EventBus (idle detection → proactive provocations)
-  │
-  ├── Dispatcher (task queue → sub-agents)
-  │     ├── ResearchAgent   (google_search → canvas cards)
-  │     ├── ImageGenAgent   (Gemini Imagen / Pollinations fallback)
-  │     ├── YouTubeAgent    (YouTube Data API v3 → iframe embeds)
-  │     ├── DocumentAgent   (PDF/Docx extraction → spatial map)
-  │     ├── SuperThinkAgent (Gemini 2.5 Pro + thinking budget)
-  │     └── ContinuationAgent (deferred multi-step tasks)
-  │
-  ├── Memory (SQLite local / Firestore cloud)
-  └── Static file server (/static/images/)
+```mermaid
+graph TD
+    %% Frontend Layer
+    subgraph Browser ["Frontend (React + tldraw)"]
+        Canvas["Infinite Canvas"]
+        Mic["Microphone Input"]
+        AudioOut["Audio Playback"]
+    end
+
+    %% Connection Layer
+    WebSocket["WebSocket Connection<br/>(PCM Audio, Canvas Snapshots, Actions)"]
+
+    Browser <-->|Real-time data| WebSocket
+
+    %% Backend Layer
+    subgraph Backend ["FastAPI Backend (main.py)"]
+        LiveOrchestrator["AlphaSurfaceAgent<br/>(ADK LiveRequestQueue + Runner)"]
+        Dispatcher["Sub-Agent Dispatcher"]
+        
+        %% Database Connection
+        DB[("Memory<br/>(SQLite / Firestore)")]
+        LiveOrchestrator <--> DB
+        
+        %% Core Gemini Connection
+        GeminiLive["Gemini 2.5 Flash Native Audio<br/>(Live API)"]
+        LiveOrchestrator <-->|Voice, Vision, Tool Calls| GeminiLive
+
+        %% Sub-Agents
+        subgraph SubAgents ["Specialist Sub-Agents"]
+            Research["Research Agent"]
+            ImageGen["Image Gen Agent"]
+            Document["Document Agent"]
+            SuperThink["Super Think Agent"]
+            YouTube["YouTube Agent"]
+            Persona["Persona Agent (Disabled by Default)"]
+        end
+
+        LiveOrchestrator -->|Task Queue| Dispatcher
+        Dispatcher --> SubAgents
+        
+        %% Secondary Gemini Connections
+        Research --> GeminiFlash["Gemini 2.5 Flash"]
+        Document --> GeminiFlash
+        SuperThink --> GeminiPro["Gemini 2.5 Pro"]
+        Persona --> GeminiFlash
+        ImageGen --> Imagen["Gemini Imagen<br/>(Fallback: Pollination.ai)"]
+        YouTube --> YTAPI["YouTube Data API"]
+    end
+
+    WebSocket <--> LiveOrchestrator
 ```
 
 ---
@@ -158,17 +313,16 @@ curl http://localhost:8000/health
 
 ---
 
-## Usage
 
-### Onboarding
+## Usage & Onboarding
 
-On first launch, you will see the onboarding flow:
+On first launch, you’ll see the onboarding flow:
 
-1. **Choose a mode** — Think Mode (solo exploration) or Present Mode (live presentation)
-2. **Describe your session focus** — optional, helps the AI orient immediately
-3. **Upload reference material** — PDFs or Docx files (Present Mode only)
+1. **Choose a mode:** Think Mode (solo) or Present Mode (live presentation)
+2. **Describe your session focus:** (optional, helps the AI orient)
+3. **Upload reference material:** PDFs or Docx files (Present Mode only)
 
-Config is saved to `localStorage` so you skip onboarding on subsequent visits. Clear it to reset:
+Config is saved to `localStorage` so you skip onboarding on subsequent visits. To reset:
 
 ```js
 localStorage.removeItem("alpha_surface_config")
@@ -177,21 +331,21 @@ localStorage.removeItem("alpha_surface_config")
 ### Think Mode
 
 - Talk freely about your ideas while drawing on the canvas
-- Go quiet for ~8 seconds — a violet provocation note will appear questioning your assumptions
+- Go quiet for ~8 seconds — a violet provocation note will appear
 - Say "research X", "find a video on Y", or "generate an image of Z" to trigger sub-agents
-- Say "super think" or "deep dive" to trigger a full Gemini 2.5 Pro analysis
-- Say "organize this" to align and distribute shapes spatially
+- Say "super think" or "deep dive" for a full Gemini 2.5 Pro analysis
+- Say "organize this" to align and distribute shapes
 
 ### Present Mode
 
 - Pre-load a document via onboarding or the main menu
-- Present normally — the AI scribes dates, concepts, and key points onto the canvas
-- Ask "what does the document say about X?" for grounded answers from your uploaded file
-- Say nothing unless spoken to — the AI stays completely silent by default
+- Present — the AI scribes dates, concepts, and key points onto the canvas
+- Ask "what does the document say about X?" for grounded answers
+- The AI stays silent unless spoken to
 
 ### Controls
 
-The status pill in the top-center shows AI state and has two toggles:
+The status pill (top-center) shows AI state and has two toggles:
 
 | Toggle | Function |
 |---|---|
